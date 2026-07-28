@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: 10-spring-boot-blueprint
+
+  datasource:
+    url: "jdbc:mysql://${MYSQL_HOST:localhost}:3306/spring-boot-blueprint?useSSL=false&allowPublicKeyRetrieval=true&serverTimezone=UTC&createDatabaseIfNotExist=true"
+    username: root
+    password: "112233"
+    driver-class-name: com.mysql.cj.jdbc.Driver
+
+  jpa:
+    hibernate:
+      ddl-auto: update
+    show-sql: true
+    open-in-view: false
+    properties:
+      hibernate:
+        format_sql: true
+
+  # data:
+  #   redis:
+  #     host: localhost
+  #     port: 6379
+
+server:
+  port: 8081
+
+# app:
+#   frontend-url: "http://localhost:5173"
+#   mail:
+#     from: no-reply@usermgmt.local
+#   jwt:
+#     secret: "aVeryLongSecretKeyForHmacSha256ThatIsAtLeast32Bytes!!"
+#     access-token-expiration: 900000
+#     refresh-token-expiration: 604800000
+
