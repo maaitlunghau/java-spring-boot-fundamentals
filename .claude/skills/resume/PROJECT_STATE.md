@@ -6,6 +6,10 @@ Last synced commit: aaca986d7cf63f6cc26eb3748d1b9459d4cd4fe0 (2026-07-28, branch
 
 Personal Vietnamese-language Spring Boot learning mono-repo (full conventions in root `.claude/CLAUDE.md` and `.claude/rules/*.md`). 9 sequential sub-projects under `projects/01`–`09`, each a self-contained Spring Boot app (own `pom.xml`) teaching one topic, increasing in difficulty. Java 21, Spring Boot latest stable, Maven wrapper, MySQL 8 via Docker by default (H2 allowed for quick/no-setup tests). The `.claude/rules/*.md` files are prescriptive (layered architecture, constructor injection only, DTOs as Java records, specific testing stack) — several sub-projects don't fully comply yet, see Known Issues below.
 
+## Commit message convention (hard rule)
+
+Every commit message: `type(scope): subject`, single line, all lowercase, ≤50 characters, no body/footer, never a `Co-Authored-By` trailer. Mechanically enforced by `.husky/commit-msg` — see `.claude/skills/writing-commit-messages/SKILL.md` for full rules. This is stricter than generic conventional-commits guidance (e.g. the superpowers `writing-commit-messages` skill's 72-char default) — this repo's local skill overrides it.
+
 ## Branch / repo state
 
 - Default branch: `main`. `feature/user-management` (all of project 09's work) was merged via PR #15.
