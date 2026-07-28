@@ -36,7 +36,7 @@ type(scope): subject
 - `type` must be one of: `feat fix docs style refactor perf test chore revert ci`
 - `scope`, if present, lowercase alphanumeric/hyphen only
 - entire subject line must be lowercase — no uppercase letters anywhere, not even mid-word
-- whole header (the single line) must be **≤ 50 characters**
+- whole header (the single line) must be **≤ 60 characters**
 - no body, no footer, no blank-line-separated paragraphs — one line, period
 - no trailing period on the subject
 
@@ -62,7 +62,7 @@ These are hard limits — the commit is rejected, not just linted.
 - Never write a multi-line commit body — keep it to one line.
 - Never use uppercase anywhere in the message — `type`, `scope`, and `subject` are all lowercase, start to end.
 - Never end the subject with a period.
-- Never exceed 50 characters total.
+- Never exceed 60 characters total.
 
 ## If Unclear
 

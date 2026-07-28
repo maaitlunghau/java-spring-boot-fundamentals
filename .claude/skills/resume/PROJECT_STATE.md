@@ -8,7 +8,7 @@ Personal Vietnamese-language Spring Boot learning mono-repo (full conventions in
 
 ## Commit message convention (hard rule)
 
-Every commit message: `type(scope): subject`, single line, all lowercase, ≤50 characters, no body/footer, never a `Co-Authored-By` trailer. Mechanically enforced by `.husky/commit-msg` — see `.claude/skills/writing-commit-messages/SKILL.md` for full rules. This is stricter than generic conventional-commits guidance (e.g. the superpowers `writing-commit-messages` skill's 72-char default) — this repo's local skill overrides it.
+Every commit message: `type(scope): subject`, single line, all lowercase, ≤60 characters, no body/footer, never a `Co-Authored-By` trailer. Mechanically enforced by `.husky/commit-msg` — see `.claude/skills/writing-commit-messages/SKILL.md` for full rules. This is stricter than generic conventional-commits guidance (e.g. the superpowers `writing-commit-messages` skill's 72-char default) — this repo's local skill overrides it.
 
 ## Branch / repo state
 
