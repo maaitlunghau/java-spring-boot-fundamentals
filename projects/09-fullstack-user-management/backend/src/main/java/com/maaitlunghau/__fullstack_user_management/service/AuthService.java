@@ -119,9 +119,9 @@ public class AuthService {
         User user = userRepository.findByEmail(request.email())
             .orElseThrow(() -> new ResourceNotFoundException("User", request.email()));
 
-        if (!user.isEmailVerified()) {
-            throw new BadRequestException("Email chưa được xác thực. Kiểm tra hộp thư để kích hoạt.");
-        }
+        // if (!user.isEmailVerified()) {
+        //     throw new BadRequestException("Email chưa được xác thực. Kiểm tra hộp thư để kích hoạt.");
+        // }
 
         return issueNewSession(user, ipAddress, userAgent);
     }
