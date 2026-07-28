@@ -106,3 +106,4 @@ H2 Console: `http://localhost:8081/h2-console` (JDBC URL: `jdbc:h2:mem:testdb`, 
 - Dùng `/grill-me` để tự kiểm tra hiểu biết về một concept
 - Dùng `/study-repo` để phân tích Spring Boot repo mẫu trên GitHub
 - Dùng `/tdd` khi implement feature để hiểu behavior qua tests
+- Dùng `/resume` đầu mỗi session để Claude nạp lại context đã biết về repo (cấu trúc, trạng thái từng sub-project, known issues, chi tiết auth của project 09) thay vì phải phân tích lại từ đầu — xem `.claude/skills/resume/`
