@@ -56,7 +56,7 @@ export function PublicLayout() {
               <div className="flex items-center gap-3">
                 <Link to="/dashboard" className="flex items-center gap-2 rounded-lg px-2 py-1 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors">
                   <Avatar name={user.fullName ?? 'User'} src={user.avatarUrl ?? undefined} size="sm" />
-                  <span className="hidden sm:block text-sm font-medium text-neutral-700 dark:text-neutral-300 max-w-[120px] truncate">
+                  <span className="hidden sm:block text-sm font-medium text-neutral-700 dark:text-neutral-300 max-w-30 truncate">
                     {user.fullName}
                   </span>
                 </Link>
