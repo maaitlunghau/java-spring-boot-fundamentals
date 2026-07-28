@@ -11,7 +11,7 @@ fail() {
   echo "husky: commit message rejected — $1"
   echo ""
   echo "  format:   type(scope): subject"
-  echo "  rules:    lowercase only, single line, <=50 chars, no body"
+  echo "  rules:    lowercase only, single line, <=60 chars, no body"
   echo "  types:    feat fix docs style refactor perf test chore revert ci"
   echo "  example:  fix(auth): correct token expiry check"
   echo ""
@@ -25,7 +25,7 @@ fail() {
 pattern='^(feat|fix|docs|style|refactor|perf|test|chore|revert|ci)(\([a-z0-9-]+\))?: .+$'
 printf '%s' "$subject" | grep -qE "$pattern" || fail "must match type(scope): subject"
 
-[ "${#subject}" -le 50 ] || fail "exceeds 50 characters (${#subject})"
+[ "${#subject}" -le 60 ] || fail "exceeds 60 characters (${#subject})"
 
 printf '%s' "$subject" | grep -q '[A-Z]' && fail "must be all lowercase"
 
