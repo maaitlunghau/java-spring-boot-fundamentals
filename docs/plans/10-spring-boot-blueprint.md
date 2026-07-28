@@ -107,6 +107,8 @@ Chi tiết từng phase — **từng step, full code** — ở mục 6 bên dư�
 
 **Step 1.1 — `common/entity/BaseEntity.java`**
 
+> Dùng Lombok `@Getter` (không phải `@Data`) trên entity — `.claude/rules/tech-defaults.md` cấm `@Data` trên entity vì nó sinh `equals()`/`hashCode()` theo TẤT CẢ field (kể cả quan hệ lazy → trigger fetch ngoài ý muốn, dễ `StackOverflowError` với quan hệ 2 chiều) và sinh setter cho mọi field (phá encapsulation — entity trong blueprint này chỉ mutate qua domain method như `updateProfile()`/`changeRole()`, không có setter công khai). `@Getter` đơn thuần an toàn: chỉ sinh getter, không đụng `equals`/`hashCode`/constructor/setter.
+
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.common.entity;
 
@@ -121,8 +123,10 @@ import jakarta.persistence.GenerationType;
 import jakarta.persistence.Id;
 import jakarta.persistence.MappedSuperclass;
 import jakarta.persistence.Version;
+import lombok.Getter;
 
 /** Mọi entity trong app extend từ đây — id, audit timestamp, optimistic locking dùng chung. */
+@Getter
 @MappedSuperclass
 public abstract class BaseEntity {
 
@@ -139,11 +143,6 @@ public abstract class BaseEntity {
 
     @Version
     private Long version;
-
-    public Long getId() { return id; }
-    public LocalDateTime getCreatedAt() { return createdAt; }
-    public LocalDateTime getUpdatedAt() { return updatedAt; }
-    public Long getVersion() { return version; }
 }
 ```
 
@@ -179,9 +178,11 @@ import jakarta.persistence.Entity;
 import jakarta.persistence.EnumType;
 import jakarta.persistence.Enumerated;
 import jakarta.persistence.Table;
+import lombok.Getter;
 
 @Entity
 @Table(name = "users")
+@Getter // sinh getFullName()/getEmail()/getPassword()/getRole()/isEnabled() — KHÔNG sinh setter
 public class User extends BaseEntity implements UserDetails {
 
     @Column(nullable = false, length = 100)
@@ -191,14 +192,14 @@ public class User extends BaseEntity implements UserDetails {
     private String email;
 
     @Column(nullable = false)
-    private String password;
+    private String password; // @Getter sinh getPassword() -> khớp thẳng chữ ký UserDetails.getPassword()
 
     @Enumerated(EnumType.STRING)
     @Column(nullable = false, length = 20)
     private Role role;
 
     @Column(nullable = false)
-    private boolean enabled = true;
+    private boolean enabled = true; // field boolean -> @Getter sinh isEnabled() -> khớp thẳng UserDetails.isEnabled()
 
     protected User() {} // JPA yêu cầu no-arg constructor
 
@@ -217,7 +218,7 @@ public class User extends BaseEntity implements UserDetails {
         this.role = role;
     }
 
-    // ===== UserDetails =====
+    // ===== UserDetails — 2 method dưới đây Lombok KHÔNG tự sinh được (tên khác field / cần tính toán) =====
 
     @Override
     public Collection<? extends GrantedAuthority> getAuthorities() {
@@ -225,28 +226,14 @@ public class User extends BaseEntity implements UserDetails {
     }
 
     @Override
-    public String getPassword() {
-        return password;
-    }
-
-    @Override
     public String getUsername() {
-        return email;
+        return email; // UserDetails coi "username" là email — không có field riêng tên "username"
     }
-
-    @Override
-    public boolean isEnabled() {
-        return enabled;
-    }
-
-    // Getters — không có setter, mutate qua domain method (updateProfile/changeRole)
-    public String getFullName() { return fullName; }
-    public String getEmail() { return email; }
-    public Role getRole() { return role; }
 }
 ```
 
 > `isAccountNonExpired`/`isAccountNonLocked`/`isCredentialsNonExpired` của `UserDetails` có default method trả `true` sẵn — không cần override trừ khi cần khoá tài khoản sau này.
+> `getPassword()` và `isEnabled()` không cần viết tay lẫn không cần `@Override` tường minh — method Lombok sinh ra từ field `password`/`enabled` đã đúng y hệt chữ ký mà interface `UserDetails` yêu cầu, tự động thoả mãn interface.
 
 **Step 1.4 — `module/user/repository/UserRepository.java`**
 
