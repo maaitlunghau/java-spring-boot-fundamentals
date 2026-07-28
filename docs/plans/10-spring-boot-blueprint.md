@@ -87,10 +87,11 @@ flowchart TB
 | Phase | Nội dung | Module |
 |---|---|---|
 | 1 | `User` entity + repository | user |
+| 1+ | CRUD `user` hoàn chỉnh (list/filter/pagination, xem, tạo, sửa, xoá) — **chưa auth/phân quyền** | user |
 | 2 | Register + login + JWT access token (chưa refresh, chưa Redis) | auth |
 | 3 | Wire `SecurityConfig` + `JwtAuthenticationFilter` toàn app — STATELESS | auth |
 | 4 | Refresh token + Redis + rotation/reuse detection | auth |
-| 5 | CRUD đầy đủ + `@PreAuthorize` theo role/ownership | user |
+| 5 | Bổ sung `@PreAuthorize` theo role/ownership lên CRUD đã có từ Phase 1+ | user |
 | 6 | Logout/blacklist, rate limit login, multi-device session | auth |
 | 7 | Test (unit/slice/integration) cả 2 module | auth + user |
 | 8 | Polish: Flyway, OpenAPI, Docker/CI | cả 2 |
@@ -256,6 +257,427 @@ public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificat
 `JpaSpecificationExecutor` cần cho Phase 5 (filter động qua `Specification`) — thêm luôn từ đầu để khỏi phải sửa lại interface sau.
 
 **Verify Phase 1:** `./mvnw compile` phải chạy sạch (chưa có bean nào phụ thuộc DB thật nên chưa cần MySQL chạy).
+
+---
+
+### Phase 1+ — CRUD `user` hoàn chỉnh (chưa có auth/phân quyền)
+
+**Mục tiêu:** có `UserController`/`UserService`/`UserRepository` chạy được full CRUD (list + filter + pagination, xem, tạo, sửa, xoá) **trước khi** đụng tới JWT — dễ test bằng curl, và dùng chính endpoint tạo user ở đây để tạo tài khoản ADMIN đầu tiên (chưa có register/login nên không có cách nào khác để có user trong DB).
+
+> **Vì sao cần `SecurityConfig` ngay từ Phase này:** `spring-boot-starter-security` đã có sẵn trong `pom.xml` từ đầu. Có dependency này trên classpath mà **chưa khai báo `SecurityFilterChain` bean nào** thì Spring Boot tự động bật cấu hình bảo mật mặc định — sinh 1 password ngẫu nhiên in ra console và chặn **toàn bộ** endpoint bằng Basic Auth. Muốn test CRUD không-auth ở phase này, bắt buộc phải có 1 `SecurityConfig` permit-all tối thiểu — đây cũng chính là bean `PasswordEncoder`/`AuthenticationManager` mà Phase 2 (login) cần, nên làm luôn từ đây, Phase 2 không phải quay lại sửa `SecurityConfig` nữa.
+
+**Step 1+.1 — `config/SecurityConfig.java`** (tạm thời permit-all — Phase 3 siết lại thành STATELESS + JWT)
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.security.authentication.AuthenticationManager;
+import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
+import org.springframework.security.config.annotation.web.builders.HttpSecurity;
+import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
+import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.csrf.CsrfConfigurer;
+
+@Configuration
+@EnableWebSecurity
+public class SecurityConfig {
+
+    @Bean
+    SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
+        http
+            .csrf(CsrfConfigurer::disable) // API thuần Bearer token, không dùng cookie -> không cần CSRF
+            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll()); // TODO Phase 3: siết lại
+        return http.build();
+    }
+
+    @Bean
+    public PasswordEncoder passwordEncoder() {
+        return new BCryptPasswordEncoder();
+    }
+
+    @Bean
+    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
+        return config.getAuthenticationManager();
+    }
+}
+```
+
+**Step 1+.2 — Cập nhật lại toàn bộ `common/dto/ApiResponse.java`** — thêm factory `of()` để trả `status` HTTP khác 200 kèm data (vd `201 Created` kèm object vừa tạo)
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.common.dto;
+
+import java.time.LocalDateTime;
+
+public record ApiResponse<T>(int status, String message, T data, LocalDateTime timestamp) {
+
+    public static <T> ApiResponse<T> ok(T data) {
+        return new ApiResponse<>(200, "Success", data, LocalDateTime.now());
+    }
+
+    public static <T> ApiResponse<T> ok(String message, T data) {
+        return new ApiResponse<>(200, message, data, LocalDateTime.now());
+    }
+
+    public static <T> ApiResponse<T> of(int status, String message, T data) {
+        return new ApiResponse<>(status, message, data, LocalDateTime.now());
+    }
+
+    public static ApiResponse<Void> message(int status, String message) {
+        return new ApiResponse<>(status, message, null, LocalDateTime.now());
+    }
+}
+```
+
+**Step 1+.3 — `common/dto/PageResponse.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.common.dto;
+
+import java.util.List;
+
+import org.springframework.data.domain.Page;
+
+public record PageResponse<T>(
+    List<T> content,
+    int page,
+    int size,
+    long totalElements,
+    int totalPages,
+    boolean last
+) {
+    public static <T> PageResponse<T> from(Page<T> page) {
+        return new PageResponse<>(
+            page.getContent(), page.getNumber(), page.getSize(),
+            page.getTotalElements(), page.getTotalPages(), page.isLast()
+        );
+    }
+}
+```
+
+**Step 1+.4 — `module/user/dto/response/UserResponse.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response;
+
+import java.time.LocalDateTime;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
+
+public record UserResponse(
+    Long id,
+    String fullName,
+    String email,
+    String imageUrl,
+    Role role,
+    boolean enabled,
+    LocalDateTime createdAt
+) {
+    public static UserResponse from(User user) {
+        return new UserResponse(
+            user.getId(), user.getFullName(), user.getEmail(), user.getImageUrl(),
+            user.getRole(), user.isEnabled(), user.getCreatedAt()
+        );
+    }
+}
+```
+
+> `imageUrl` có trong response vì entity `User` của bạn đã bổ sung field này ở Phase 1 — nếu bạn không có field đó thì bỏ dòng tương ứng.
+
+**Step 1+.5 — `module/user/dto/request/CreateUserRequest.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request;
+
+import jakarta.validation.constraints.Email;
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+import jakarta.validation.constraints.Size;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+
+public record CreateUserRequest(
+    @NotBlank(message = "Họ tên là bắt buộc") String fullName,
+    @Email(message = "Email không hợp lệ") @NotBlank(message = "Email là bắt buộc") String email,
+    @NotBlank(message = "Mật khẩu là bắt buộc") @Size(min = 6, message = "Mật khẩu tối thiểu 6 ký tự") String password,
+    @NotNull(message = "role là bắt buộc") Role role
+) {}
+```
+
+**Step 1+.6 — `module/user/dto/request/UpdateUserRequest.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request;
+
+import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.NotNull;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+
+public record UpdateUserRequest(
+    @NotBlank(message = "Họ tên là bắt buộc") String fullName,
+    String imageUrl,
+    @NotNull(message = "role là bắt buộc") Role role
+) {}
+```
+
+> DTO này là bản "sửa tất cả trong 1" tạm thời — vì Phase này chưa có khái niệm "chính chủ" (không có `@AuthenticationPrincipal`, chưa có JWT). Phase 5 sẽ **thay thế** file này bằng 2 DTO chuyên biệt hơn (`UpdateProfileRequest` cho chính chủ, `UpdateUserRoleRequest` cho admin) — lúc đó nhớ xoá `UpdateUserRequest.java` đi, không dùng nữa.
+
+**Step 1+.7 — Cập nhật lại toàn bộ `module/user/repository/UserRepository.java`** — thêm `countByRole` (cần cho rule "không xoá/hạ quyền ADMIN cuối cùng")
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.repository;
+
+import java.util.Optional;
+
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
+
+public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificationExecutor<User> {
+    Optional<User> findByEmail(String email);
+    boolean existsByEmail(String email);
+    long countByRole(Role role);
+}
+```
+
+**Step 1+.8 — `module/user/repository/spec/UserSpecifications.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.repository.spec;
+
+import org.springframework.data.jpa.domain.Specification;
+import org.springframework.util.StringUtils;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
+
+public final class UserSpecifications {
+
+    private UserSpecifications() {}
+
+    public static Specification<User> keywordIn(String keyword) {
+        return (root, query, cb) -> {
+            if (!StringUtils.hasText(keyword)) return cb.conjunction();
+            String pattern = "%" + keyword.toLowerCase() + "%";
+            return cb.or(
+                cb.like(cb.lower(root.get("fullName")), pattern),
+                cb.like(cb.lower(root.get("email")), pattern)
+            );
+        };
+    }
+
+    public static Specification<User> hasRole(Role role) {
+        return (root, query, cb) -> role == null ? cb.conjunction() : cb.equal(root.get("role"), role);
+    }
+}
+```
+
+**Step 1+.9 — `module/user/service/UserService.java`** (interface)
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.service;
+
+import org.springframework.data.domain.Pageable;
+
+import com.maaitlunghau.__spring_boot_blueprint.common.dto.PageResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.CreateUserRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateUserRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response.UserResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+
+public interface UserService {
+    PageResponse<UserResponse> search(String keyword, Role role, Pageable pageable);
+    UserResponse getById(Long id);
+    UserResponse create(CreateUserRequest request);
+    UserResponse update(Long id, UpdateUserRequest request);
+    void delete(Long id);
+}
+```
+
+**Step 1+.10 — `module/user/service/impl/UserServiceImpl.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.service.impl;
+
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.security.crypto.password.PasswordEncoder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+
+import com.maaitlunghau.__spring_boot_blueprint.common.dto.PageResponse;
+import com.maaitlunghau.__spring_boot_blueprint.exception.BadRequestException;
+import com.maaitlunghau.__spring_boot_blueprint.exception.DuplicateResourceException;
+import com.maaitlunghau.__spring_boot_blueprint.exception.ResourceNotFoundException;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.CreateUserRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateUserRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response.UserResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.repository.UserRepository;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.repository.spec.UserSpecifications;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.service.UserService;
+
+@Service
+@Transactional(readOnly = true)
+public class UserServiceImpl implements UserService {
+
+    private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
+
+    public UserServiceImpl(UserRepository userRepository, PasswordEncoder passwordEncoder) {
+        this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
+    }
+
+    @Override
+    public PageResponse<UserResponse> search(String keyword, Role role, Pageable pageable) {
+        Page<User> page = userRepository.findAll(
+            UserSpecifications.keywordIn(keyword).and(UserSpecifications.hasRole(role)), pageable);
+        return PageResponse.from(page.map(UserResponse::from));
+    }
+
+    @Override
+    public UserResponse getById(Long id) {
+        return UserResponse.from(findUserOrThrow(id));
+    }
+
+    @Override
+    @Transactional
+    public UserResponse create(CreateUserRequest request) {
+        if (userRepository.existsByEmail(request.email())) {
+            throw new DuplicateResourceException("Email đã tồn tại: " + request.email());
+        }
+        User user = new User(request.fullName(), request.email(),
+            passwordEncoder.encode(request.password()), request.role());
+        return UserResponse.from(userRepository.save(user));
+    }
+
+    @Override
+    @Transactional
+    public UserResponse update(Long id, UpdateUserRequest request) {
+        User user = findUserOrThrow(id);
+        if (user.getRole() == Role.ADMIN && request.role() != Role.ADMIN
+                && userRepository.countByRole(Role.ADMIN) <= 1) {
+            throw new BadRequestException("Không thể hạ quyền ADMIN cuối cùng trong hệ thống");
+        }
+        user.updateProfile(request.fullName(), request.imageUrl());
+        user.changeRole(request.role());
+        return UserResponse.from(user); // dirty checking tự flush khi transaction commit
+    }
+
+    @Override
+    @Transactional
+    public void delete(Long id) {
+        User user = findUserOrThrow(id);
+        if (user.getRole() == Role.ADMIN && userRepository.countByRole(Role.ADMIN) <= 1) {
+            throw new BadRequestException("Không thể xoá ADMIN cuối cùng trong hệ thống");
+        }
+        userRepository.delete(user);
+    }
+
+    private User findUserOrThrow(Long id) {
+        return userRepository.findById(id)
+            .orElseThrow(() -> new ResourceNotFoundException("User", id));
+    }
+}
+```
+
+**Step 1+.11 — `module/user/controller/v1/UserController.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.user.controller.v1;
+
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.ResponseEntity;
+import org.springframework.web.bind.annotation.DeleteMapping;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
+import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import com.maaitlunghau.__spring_boot_blueprint.common.dto.ApiResponse;
+import com.maaitlunghau.__spring_boot_blueprint.common.dto.PageResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.CreateUserRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateUserRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response.UserResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.service.UserService;
+
+import jakarta.validation.Valid;
+
+/**
+ * CHƯA có phân quyền — mọi endpoint đang public tạm thời vì chưa có JWT filter
+ * (Phase 3) lẫn @AuthenticationPrincipal. Phase 5 sẽ quay lại đúng file này,
+ * thêm @PreAuthorize và tách endpoint /me (chính chủ) khỏi thao tác admin.
+ */
+@RestController
+@RequestMapping("/api/v1/users")
+public class UserController {
+
+    private final UserService userService;
+
+    public UserController(UserService userService) {
+        this.userService = userService;
+    }
+
+    @GetMapping
+    public ResponseEntity<ApiResponse<PageResponse<UserResponse>>> search(
+            @RequestParam(required = false) String keyword,
+            @RequestParam(required = false) Role role,
+            Pageable pageable) {
+        return ResponseEntity.ok(ApiResponse.ok(userService.search(keyword, role, pageable)));
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<ApiResponse<UserResponse>> getById(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.ok(userService.getById(id)));
+    }
+
+    @PostMapping
+    public ResponseEntity<ApiResponse<UserResponse>> create(@Valid @RequestBody CreateUserRequest request) {
+        UserResponse created = userService.create(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.of(201, "Tạo user thành công", created));
+    }
+
+    @PatchMapping("/{id}")
+    public ResponseEntity<ApiResponse<UserResponse>> update(@PathVariable Long id,
+                                                              @Valid @RequestBody UpdateUserRequest request) {
+        return ResponseEntity.ok(ApiResponse.ok("Cập nhật thành công", userService.update(id, request)));
+    }
+
+    @DeleteMapping("/{id}")
+    public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
+        userService.delete(id);
+        return ResponseEntity.ok(ApiResponse.message(200, "Xoá thành công"));
+    }
+}
+```
+
+**Verify Phase 1+:** `./mvnw spring-boot:run` (cần MySQL sống). Tạo user ADMIN đầu tiên (chưa có register nên đây là cách duy nhất để có data):
+
+```bash
+curl -X POST localhost:8081/api/v1/users -H "Content-Type: application/json" \
+  -d '{"fullName":"Admin","email":"admin@example.com","password":"password123","role":"ADMIN"}'
+
+curl localhost:8081/api/v1/users
+curl "localhost:8081/api/v1/users?keyword=admin&page=0&size=10"
+```
+
+Tất cả phải trả `200`/`201` không cần header `Authorization` (vì `SecurityConfig` đang permit-all).
 
 ---
 
@@ -683,45 +1105,7 @@ public class AuthController {
 }
 ```
 
-**Step 2.11 — `config/SecurityConfig.java`** (tạm thời permit-all — Phase 3 siết lại)
-
-```java
-package com.maaitlunghau.__spring_boot_blueprint.config;
-
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.security.authentication.AuthenticationManager;
-import org.springframework.security.config.annotation.authentication.configuration.AuthenticationConfiguration;
-import org.springframework.security.config.annotation.web.builders.HttpSecurity;
-import org.springframework.security.config.annotation.web.configuration.EnableWebSecurity;
-import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
-import org.springframework.security.crypto.password.PasswordEncoder;
-import org.springframework.security.web.SecurityFilterChain;
-import org.springframework.security.web.csrf.CsrfConfigurer;
-
-@Configuration
-@EnableWebSecurity
-public class SecurityConfig {
-
-    @Bean
-    SecurityFilterChain filterChain(HttpSecurity http) throws Exception {
-        http
-            .csrf(CsrfConfigurer::disable) // API thuần Bearer token, không dùng cookie -> không cần CSRF
-            .authorizeHttpRequests(auth -> auth.anyRequest().permitAll()); // TODO Phase 3: siết lại
-        return http.build();
-    }
-
-    @Bean
-    public PasswordEncoder passwordEncoder() {
-        return new BCryptPasswordEncoder();
-    }
-
-    @Bean
-    public AuthenticationManager authenticationManager(AuthenticationConfiguration config) throws Exception {
-        return config.getAuthenticationManager();
-    }
-}
-```
+> `SecurityConfig` (tạm permit-all) đã được tạo sẵn từ **Phase 1+** (vì CRUD user ở Phase 1+ cũng cần chạy không-auth) — không cần làm lại ở đây. `passwordEncoder()` và `authenticationManager()` bean trong đó chính là 2 bean `AuthService` ở trên đang cần.
 
 **Verify Phase 2:** chạy `./mvnw spring-boot:run` (cần MySQL sống), test bằng curl:
 
@@ -995,7 +1379,7 @@ public class SecurityConfig {
 }
 ```
 
-**Verify Phase 3:** gọi 1 endpoint bất kỳ ngoài `/api/v1/auth/**` (chưa có — có thể tạm test bằng `GET /api/v1/users/me` sau khi làm Phase 5) mà không có header `Authorization` → phải nhận `401` theo đúng shape `ApiResponse`.
+**Verify Phase 3:** gọi `GET /api/v1/users` (đã có từ Phase 1+) mà **không** có header `Authorization` → phải nhận `401` theo đúng shape `ApiResponse` (trước Phase 3 endpoint này permit-all nên sẽ trả `200`; sau Phase 3 phải đổi thành `401` — đây chính là cách xác nhận `SecurityConfig` đã siết đúng). Gọi lại kèm `Authorization: Bearer <access token>` từ `/login` (Phase 2) → phải nhận `200`.
 
 ---
 
@@ -1521,74 +1905,21 @@ public class AuthController {
 
 ---
 
-### Phase 5 — `user` CRUD đầy đủ + `@PreAuthorize`
+### Phase 5 — Thêm phân quyền (`@PreAuthorize`) lên `user` CRUD đã có từ Phase 1+
 
-**Mục tiêu:** danh sách/xem/sửa/xoá user với phân quyền role/ownership.
+**Mục tiêu:** CRUD user đã chạy được (không auth) từ Phase 1+ — phase này **không xây lại từ đầu**, chỉ bổ sung phân quyền role/ownership giờ đã có JWT filter (Phase 3) để dùng. Tách riêng `UpdateProfileRequest` (chính chủ, chỉ sửa hồ sơ) và `UpdateUserRoleRequest` (ADMIN, chỉ đổi role) — 2 endpoint khác nhau, 2 quyền khác nhau, không gộp chung 1 DTO "update-tất-cả" để tránh user tự nâng quyền qua endpoint tự sửa profile. `UpdateUserRequest.java` (bản gộp tạm ở Phase 1+) từ giờ **không dùng nữa — xoá file đó**.
 
-**Step 5.1 — `common/dto/PageResponse.java`**
-
-```java
-package com.maaitlunghau.__spring_boot_blueprint.common.dto;
-
-import java.util.List;
-
-import org.springframework.data.domain.Page;
-
-public record PageResponse<T>(
-    List<T> content,
-    int page,
-    int size,
-    long totalElements,
-    int totalPages,
-    boolean last
-) {
-    public static <T> PageResponse<T> from(Page<T> page) {
-        return new PageResponse<>(
-            page.getContent(), page.getNumber(), page.getSize(),
-            page.getTotalElements(), page.getTotalPages(), page.isLast()
-        );
-    }
-}
-```
-
-**Step 5.2 — `module/user/dto/response/UserResponse.java`**
-
-```java
-package com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response;
-
-import java.time.LocalDateTime;
-
-import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
-import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
-
-public record UserResponse(
-    Long id,
-    String fullName,
-    String email,
-    Role role,
-    boolean enabled,
-    LocalDateTime createdAt
-) {
-    public static UserResponse from(User user) {
-        return new UserResponse(
-            user.getId(), user.getFullName(), user.getEmail(),
-            user.getRole(), user.isEnabled(), user.getCreatedAt()
-        );
-    }
-}
-```
-
-**Step 5.3 — `module/user/dto/request/UpdateProfileRequest.java`**
+**Step 5.1 — `module/user/dto/request/UpdateProfileRequest.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request;
 
 import jakarta.validation.constraints.NotBlank;
 
-public record UpdateProfileRequest(@NotBlank(message = "Họ tên là bắt buộc") String fullName) {}
+public record UpdateProfileRequest(@NotBlank(message = "Họ tên là bắt buộc") String fullName, String imageUrl) {}
 ```
 
-**`module/user/dto/request/UpdateUserRoleRequest.java`**
+**Step 5.2 — `module/user/dto/request/UpdateUserRoleRequest.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request;
@@ -1600,61 +1931,7 @@ import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
 public record UpdateUserRoleRequest(@NotNull(message = "role là bắt buộc") Role role) {}
 ```
 
-> Tách riêng `UpdateProfileRequest` (chính chủ, chỉ sửa `fullName`) và `UpdateUserRoleRequest` (ADMIN, chỉ sửa `role`) — 2 endpoint khác nhau, 2 quyền khác nhau, không gộp chung 1 DTO "update-tất-cả" để tránh user tự nâng quyền qua endpoint tự sửa profile.
-
-**Step 5.4 — Cập nhật lại toàn bộ `module/user/repository/UserRepository.java`** — thêm `countByRole`
-
-```java
-package com.maaitlunghau.__spring_boot_blueprint.module.user.repository;
-
-import java.util.Optional;
-
-import org.springframework.data.jpa.repository.JpaRepository;
-import org.springframework.data.jpa.repository.JpaSpecificationExecutor;
-
-import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
-import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
-
-public interface UserRepository extends JpaRepository<User, Long>, JpaSpecificationExecutor<User> {
-    Optional<User> findByEmail(String email);
-    boolean existsByEmail(String email);
-    long countByRole(Role role);
-}
-```
-
-**Step 5.5 — `module/user/repository/spec/UserSpecifications.java`**
-
-```java
-package com.maaitlunghau.__spring_boot_blueprint.module.user.repository.spec;
-
-import org.springframework.data.jpa.domain.Specification;
-import org.springframework.util.StringUtils;
-
-import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
-import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
-
-public final class UserSpecifications {
-
-    private UserSpecifications() {}
-
-    public static Specification<User> keywordIn(String keyword) {
-        return (root, query, cb) -> {
-            if (!StringUtils.hasText(keyword)) return cb.conjunction();
-            String pattern = "%" + keyword.toLowerCase() + "%";
-            return cb.or(
-                cb.like(cb.lower(root.get("fullName")), pattern),
-                cb.like(cb.lower(root.get("email")), pattern)
-            );
-        };
-    }
-
-    public static Specification<User> hasRole(Role role) {
-        return (root, query, cb) -> role == null ? cb.conjunction() : cb.equal(root.get("role"), role);
-    }
-}
-```
-
-**Step 5.6 — `module/user/service/UserService.java`** (interface)
+**Step 5.3 — Cập nhật lại toàn bộ `module/user/service/UserService.java`** — bỏ `update()` chung, thay bằng `updateProfile()` (chính chủ) + `updateRole()` (ADMIN); `create()` giữ nguyên từ Phase 1+
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.user.service;
@@ -1662,6 +1939,7 @@ package com.maaitlunghau.__spring_boot_blueprint.module.user.service;
 import org.springframework.data.domain.Pageable;
 
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.PageResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.CreateUserRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateProfileRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateUserRoleRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response.UserResponse;
@@ -1670,25 +1948,29 @@ import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
 public interface UserService {
     PageResponse<UserResponse> search(String keyword, Role role, Pageable pageable);
     UserResponse getById(Long id);
+    UserResponse create(CreateUserRequest request);
     UserResponse updateProfile(Long id, UpdateProfileRequest request);
     UserResponse updateRole(Long id, UpdateUserRoleRequest request);
     void delete(Long id);
 }
 ```
 
-**Step 5.7 — `module/user/service/impl/UserServiceImpl.java`**
+**Step 5.4 — Cập nhật lại toàn bộ `module/user/service/impl/UserServiceImpl.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.user.service.impl;
 
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.security.crypto.password.PasswordEncoder;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.PageResponse;
 import com.maaitlunghau.__spring_boot_blueprint.exception.BadRequestException;
+import com.maaitlunghau.__spring_boot_blueprint.exception.DuplicateResourceException;
 import com.maaitlunghau.__spring_boot_blueprint.exception.ResourceNotFoundException;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.CreateUserRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateProfileRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateUserRoleRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response.UserResponse;
@@ -1703,9 +1985,11 @@ import com.maaitlunghau.__spring_boot_blueprint.module.user.service.UserService;
 public class UserServiceImpl implements UserService {
 
     private final UserRepository userRepository;
+    private final PasswordEncoder passwordEncoder;
 
-    public UserServiceImpl(UserRepository userRepository) {
+    public UserServiceImpl(UserRepository userRepository, PasswordEncoder passwordEncoder) {
         this.userRepository = userRepository;
+        this.passwordEncoder = passwordEncoder;
     }
 
     @Override
@@ -1722,9 +2006,20 @@ public class UserServiceImpl implements UserService {
 
     @Override
     @Transactional
+    public UserResponse create(CreateUserRequest request) {
+        if (userRepository.existsByEmail(request.email())) {
+            throw new DuplicateResourceException("Email đã tồn tại: " + request.email());
+        }
+        User user = new User(request.fullName(), request.email(),
+            passwordEncoder.encode(request.password()), request.role());
+        return UserResponse.from(userRepository.save(user));
+    }
+
+    @Override
+    @Transactional
     public UserResponse updateProfile(Long id, UpdateProfileRequest request) {
         User user = findUserOrThrow(id);
-        user.updateProfile(request.fullName());
+        user.updateProfile(request.fullName(), request.imageUrl());
         return UserResponse.from(user); // dirty checking tự flush khi transaction commit
     }
 
@@ -1757,12 +2052,13 @@ public class UserServiceImpl implements UserService {
 }
 ```
 
-**Step 5.8 — `module/user/controller/v1/UserController.java`**
+**Step 5.5 — Cập nhật lại toàn bộ `module/user/controller/v1/UserController.java`** — thêm `@PreAuthorize`, thêm `/me` (chính chủ, dùng `@AuthenticationPrincipal` — có được từ Phase 3)
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.user.controller.v1;
 
 import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -1770,6 +2066,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
+import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
@@ -1777,6 +2074,7 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.ApiResponse;
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.PageResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.CreateUserRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateProfileRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateUserRoleRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response.UserResponse;
@@ -1803,6 +2101,13 @@ public class UserController {
             @RequestParam(required = false) Role role,
             Pageable pageable) {
         return ResponseEntity.ok(ApiResponse.ok(userService.search(keyword, role, pageable)));
+    }
+
+    @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
+    public ResponseEntity<ApiResponse<UserResponse>> create(@Valid @RequestBody CreateUserRequest request) {
+        UserResponse created = userService.create(request);
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.of(201, "Tạo user thành công", created));
     }
 
     @GetMapping("/me")
@@ -1838,9 +2143,9 @@ public class UserController {
 }
 ```
 
-> `@AuthenticationPrincipal User user` inject thẳng entity `User` vì nó implements `UserDetails` và `JwtAuthenticationFilter` đã set nó làm principal (Step 3.1).
+> `@AuthenticationPrincipal User user` inject thẳng entity `User` vì nó implements `UserDetails` và `JwtAuthenticationFilter` đã set nó làm principal (Step 3.1). Endpoint `PATCH /api/v1/users/{id}` (sửa toàn bộ, không phân biệt ai gọi) của Phase 1+ bị **thay thế** bởi 2 endpoint chuyên biệt hơn ở đây — xoá method `update()` cũ trong controller nếu còn sót.
 
-**Verify Phase 5:** đăng nhập bằng 1 user role `USER` thường, gọi `GET /api/v1/users` → phải nhận `403`. Tạo 1 user role `ADMIN` (sửa tay trong DB hoặc thêm data seeder), gọi lại → `200`.
+**Verify Phase 5:** đăng nhập bằng 1 user role `USER` thường, gọi `GET /api/v1/users` → phải nhận `403`. Đăng nhập bằng user role `ADMIN` (tạo từ Phase 1+) → gọi lại → `200`.
 
 ---
 
@@ -2658,20 +2963,22 @@ jobs:
 
 ## 7. Danh sách endpoint
 
-| Method | Path | Auth | Có từ Phase |
+| Method | Path | Auth (từ Phase nào) | Có từ Phase |
 |---|---|---|---|
+| GET | `/api/v1/users` | public → ADMIN (Phase 5) | 1+ |
+| POST | `/api/v1/users` | public → ADMIN (Phase 5) | 1+ |
+| GET | `/api/v1/users/{id}` | public → ADMIN (Phase 5) | 1+ |
+| PATCH | `/api/v1/users/{id}` | public — **bị xoá ở Phase 5**, thay bằng 2 dòng dưới | 1+ → xoá ở 5 |
+| DELETE | `/api/v1/users/{id}` | public → ADMIN (Phase 5) | 1+ |
 | POST | `/api/v1/auth/register` | public | 2 |
 | POST | `/api/v1/auth/login` | public | 2 (refresh token từ Phase 4) |
 | POST | `/api/v1/auth/refresh` | refresh token | 4 |
+| GET | `/api/v1/users/me` | chính chủ | 5 |
+| PATCH | `/api/v1/users/me` | chính chủ | 5 |
+| PATCH | `/api/v1/users/{id}/role` | ADMIN | 5 |
 | POST | `/api/v1/auth/logout` | access token | 6 |
 | GET | `/api/v1/auth/sessions` | access token | 6 |
 | DELETE | `/api/v1/auth/sessions/{sessionId}` | access token | 6 |
-| GET | `/api/v1/users` | ADMIN | 5 |
-| GET | `/api/v1/users/me` | chính chủ | 5 |
-| PATCH | `/api/v1/users/me` | chính chủ | 5 |
-| GET | `/api/v1/users/{id}` | ADMIN | 5 |
-| PATCH | `/api/v1/users/{id}/role` | ADMIN | 5 |
-| DELETE | `/api/v1/users/{id}` | ADMIN | 5 |
 
 ---
 
@@ -2691,10 +2998,11 @@ jobs:
 ## 9. Checklist thực thi
 
 - [ ] Phase 1 — `BaseEntity`, `Role`, `User`, `UserRepository`
-- [ ] Phase 2 — JJWT dependency, `ApiResponse`, exception + `GlobalExceptionHandler`, `JwtService`, `UserDetailsServiceImpl`, `AuthService` (register/login), `AuthController`, `SecurityConfig` tạm permit-all
-- [ ] Phase 3 — `JwtAuthenticationFilter`, entry point/access-denied handler, `CorsConfig`, `SecurityConfig` STATELESS
+- [ ] Phase 1+ — `SecurityConfig` tạm permit-all, `ApiResponse` (+factory `of`), `PageResponse`, `UserResponse`, `CreateUserRequest`/`UpdateUserRequest`, `UserSpecifications`, `UserService`/`UserServiceImpl`/`UserController` (CRUD chưa auth)
+- [ ] Phase 2 — JJWT dependency, exception + `GlobalExceptionHandler`, `JwtService`, `UserDetailsServiceImpl`, `AuthService` (register/login), `AuthController`
+- [ ] Phase 3 — `JwtAuthenticationFilter`, entry point/access-denied handler, `CorsConfig`, cập nhật `SecurityConfig` sang STATELESS
 - [ ] Phase 4 — Redis dependency, `RedisConfig`, `RefreshTokenService` (rotation + reuse detection), cập nhật `JwtService`/`AuthService`/`AuthController`
-- [ ] Phase 5 — `PageResponse`, `UserResponse`, DTO update, `UserSpecifications`, `UserService`/`UserServiceImpl`, `UserController`
+- [ ] Phase 5 — `UpdateProfileRequest`/`UpdateUserRoleRequest` (xoá `UpdateUserRequest` cũ), cập nhật `UserService`/`UserServiceImpl`/`UserController` thêm `@PreAuthorize` + `/me`
 - [ ] Phase 6 — `TokenBlacklistService`, cập nhật `JwtAuthenticationFilter`/`AuthService`/`AuthController`, `SessionController`, `RateLimitFilter` — **nhớ sửa lỗi wildcard CORS/permitAll cố ý để lại ở Step 6.7**
 - [ ] Phase 7 — `AuthServiceTest`, `AuthControllerTest`, `UserRepositoryTest` + viết thêm test tương tự cho `user`
 - [ ] Phase 8 — Flyway migration, `ddl-auto: validate`, `OpenApiConfig`, `Dockerfile`, `docker-compose.yml`, `.env.example`, `.github/workflows/ci.yml`, Testcontainers cho integration test
