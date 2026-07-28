@@ -109,6 +109,8 @@ cd projects/10-spring-boot-blueprint
 # http://localhost:8081
 ```
 
+> Roadmap chi tiết module `auth`/`user` (JWT + Redis refresh token, thiết kế key, thứ tự implement): [`docs/plans/10-spring-boot-blueprint.md`](../../docs/plans/10-spring-boot-blueprint.md)
+
 MySQL cần chạy sẵn (username `root` / password `112233`, DB `spring-boot-blueprint`, xem `application.yml`) — chưa có `docker-compose.yml` để tự động hoá việc này.
 
 ## TODO — chưa hoàn thiện
