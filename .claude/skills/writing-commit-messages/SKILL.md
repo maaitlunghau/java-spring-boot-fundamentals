@@ -7,7 +7,7 @@ description: Use when creating a git commit in this project - covers checking re
 
 ## Overview
 
-Commits in this project are validated by a Husky `commit-msg` hook (bash regex). Messages must be short, single-line, and follow the type(scope) format. Never add co-author trailers.
+Commits in this project are validated by a Husky `commit-msg` hook (`.husky/commit-msg`, bash — no commitlint package installed, the hook itself is the enforcement). Messages must be short, single-line, all lowercase, and follow the type(scope) format. Never add co-author trailers — the hook rejects any commit with more than one non-blank line, so a trailer makes the commit fail outright.
 
 ## Before Committing — Always
 
@@ -28,30 +28,19 @@ Use `git log` to match scopes/wording conventions already used in the project (e
 type(scope): subject
 ```
 
-- One line only. No body, no footer, no blank-line-separated paragraphs.
+- One line only. No body, no footer, no blank-line-separated paragraphs — the hook counts non-blank lines and rejects anything but exactly 1.
 - `scope` is optional but use one if recent commits in that area use one (check `git log`).
 
-### Rules (from commitlint.config.cjs)
+### Rules (enforced by `.husky/commit-msg`)
 
-```js
-module.exports = {
-  extends: ['@commitlint/config-conventional'],
-  rules: {
-    'type-enum': [2, 'always', [
-      'feat', 'fix', 'docs', 'style', 'refactor',
-      'perf', 'test', 'chore', 'revert', 'ci',
-    ]],
-    'type-case': [2, 'always', 'lower-case'],
-    'subject-case': [2, 'always', 'lower-case'],
-    'subject-empty': [2, 'never'],
-    'subject-full-stop': [2, 'never', '.'],
-    'header-max-length': [2, 'always', 100],
-    'scope-case': [2, 'always', 'lower-case'],
-  },
-};
-```
+- `type` must be one of: `feat fix docs style refactor perf test chore revert ci`
+- `scope`, if present, lowercase alphanumeric/hyphen only
+- entire subject line must be lowercase — no uppercase letters anywhere, not even mid-word
+- whole header (the single line) must be **≤ 50 characters**
+- no body, no footer, no blank-line-separated paragraphs — one line, period
+- no trailing period on the subject
 
-In short: `type` and `subject` lower-case, `type` from the list above, no trailing period, no empty subject, whole header ≤ 100 chars, `scope` lower-case.
+These are hard limits — the commit is rejected, not just linted.
 
 ### Type meanings
 
@@ -71,8 +60,9 @@ In short: `type` and `subject` lower-case, `type` from the list above, no traili
 
 - **Never** add a `Co-Authored-By:` line or any "Generated with Claude" trailer.
 - Never write a multi-line commit body — keep it to one line.
-- Never use uppercase in `type`, `scope`, or the start of `subject`.
+- Never use uppercase anywhere in the message — `type`, `scope`, and `subject` are all lowercase, start to end.
 - Never end the subject with a period.
+- Never exceed 50 characters total.
 
 ## If Unclear
 
