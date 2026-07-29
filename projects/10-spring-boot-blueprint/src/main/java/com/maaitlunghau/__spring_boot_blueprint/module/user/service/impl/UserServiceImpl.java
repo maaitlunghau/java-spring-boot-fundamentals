@@ -65,7 +65,11 @@ public class UserServiceImpl implements UserService {
     @Transactional
     public UserResponse updateProfile(Long id, UpdateProfileRequest request) {
         User user = findUserOrThrow(id);
-        user.updateProfile(request.fullName(), request.imageUrl());
+
+        String fullName = request.fullName() != null ? request.fullName() : user.getFullName();
+        String imageUrl = request.imageUrl() != null ? request.imageUrl() : user.getImageUrl();
+
+        user.updateProfile(fullName, imageUrl);
         return UserResponse.from(user);
     }
 
