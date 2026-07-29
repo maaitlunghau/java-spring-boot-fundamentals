@@ -412,14 +412,14 @@ public record CreateUserRequest(
 **Step 1+.6 — `module/user/dto/request/UpdateProfileRequest.java` + `UpdateUserRoleRequest.java`**
 
 > **Cập nhật 2026-07-29:** ban đầu Step này định làm 1 DTO gộp "sửa tất cả trong 1" (`UpdateUserRequest`) rồi tách ra ở Phase 5 khi có `@AuthenticationPrincipal`. Trong lúc triển khai thực tế đã quyết định tách DTO **ngay từ Phase 1+** để tránh viết rồi xoá — lý do: `UserServiceImpl` ghi đè field không điều kiện (không merge partial update), nên 1 DTO gộp bắt buộc mọi field phải `@NotBlank`/`@NotNull` cùng lúc, dễ nhầm với "phải luôn gửi đủ cả fullName lẫn role". Tách theo đúng ranh giới nghiệp vụ (hồ sơ vs quyền hạn) ngay từ đầu rõ ràng hơn. Phase 5 giờ chỉ còn việc gắn `@PreAuthorize`/`@AuthenticationPrincipal` lên 2 DTO/endpoint đã có sẵn này — xem Phase 5 bên dưới.
+>
+> **Cập nhật 2026-07-29 (2):** `UpdateProfileRequest` ban đầu bắt buộc cả `fullName` lẫn `imageUrl` (ngữ nghĩa PUT — thay toàn bộ). Nhận ra 2 field này độc lập với nhau trong cùng 1 concern "profile" (client có thể chỉ muốn đổi avatar mà không đổi tên) — đổi sang ngữ nghĩa PATCH: field nào không gửi (`null`) thì giữ nguyên giá trị cũ, `UserServiceImpl.updateProfile()` merge thủ công trước khi gọi `user.updateProfile(...)`. `UpdateUserRoleRequest`/`updateRole()` vẫn giữ PUT vì chỉ có 1 field, không có khái niệm "giữ nguyên phần còn lại".
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request;
 
-import jakarta.validation.constraints.NotBlank;
-
 public record UpdateProfileRequest(
-    @NotBlank(message = "Full name is required.") String fullName,
+    String fullName,
     String imageUrl
 ) {}
 ```
@@ -576,7 +576,9 @@ public class UserServiceImpl implements UserService {
     @Transactional
     public UserResponse updateProfile(Long id, UpdateProfileRequest request) {
         User user = findUserOrThrow(id);
-        user.updateProfile(request.fullName(), request.imageUrl());
+        String fullName = request.fullName() != null ? request.fullName() : user.getFullName();
+        String imageUrl = request.imageUrl() != null ? request.imageUrl() : user.getImageUrl();
+        user.updateProfile(fullName, imageUrl);
         return UserResponse.from(user); // dirty checking tự flush khi transaction commit
     }
 
@@ -619,6 +621,7 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -674,7 +677,7 @@ public class UserController {
         return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.of(201, "Created successfully", created));
     }
 
-    @PutMapping("/{id}/profile")
+    @PatchMapping("/{id}/profile")
     public ResponseEntity<ApiResponse<UserResponse>> updateProfile(@PathVariable Long id,
                                                                      @Valid @RequestBody UpdateProfileRequest request) {
         return ResponseEntity.ok(ApiResponse.ok("Updated profile successfully", userService.updateProfile(id, request)));
@@ -702,8 +705,8 @@ curl -X POST localhost:8081/api/v1/users -H "Content-Type: application/json" \
 
 curl localhost:8081/api/v1/users
 curl "localhost:8081/api/v1/users?keyword=admin&page=0&size=10"
-curl -X PUT localhost:8081/api/v1/users/1/profile -H "Content-Type: application/json" \
-  -d '{"fullName":"Admin Updated","imageUrl":null}'
+curl -X PATCH localhost:8081/api/v1/users/1/profile -H "Content-Type: application/json" \
+  -d '{"imageUrl":"http://example.com/avatar.png"}'
 curl -X PUT localhost:8081/api/v1/users/1/role -H "Content-Type: application/json" \
   -d '{"role":"ADMIN"}'
 ```
@@ -1940,7 +1943,7 @@ public class AuthController {
 
 **Mục tiêu:** CRUD user đã chạy được (không auth) từ Phase 1+ — phase này **không xây lại từ đầu**, chỉ bổ sung phân quyền role/ownership giờ đã có JWT filter (Phase 3) để dùng.
 
-> **Cập nhật 2026-07-29:** `UpdateProfileRequest`/`UpdateUserRoleRequest`, `UserService`/`UserServiceImpl` (`updateProfile()`/`updateRole()`), và 2 endpoint `PUT /{id}/profile`/`PUT /{id}/role` **đã được làm sẵn từ Phase 1+** (xem Step 1+.6/1+.9/1+.10/1+.11) — không phải đợi tới Phase 5 mới tách. Lý do dời sớm: tách theo đúng ranh giới nghiệp vụ (hồ sơ vs quyền hạn) ngay từ đầu rõ ràng hơn là viết 1 DTO gộp rồi xoá đi làm lại. Phase 5 giờ **chỉ còn duy nhất 1 việc**: gắn `@PreAuthorize` lên các endpoint đã có sẵn + thêm 2 endpoint `/me` (chính chủ, dùng `@AuthenticationPrincipal` — có được từ Phase 3). Không cần đụng lại DTO/service.
+> **Cập nhật 2026-07-29:** `UpdateProfileRequest`/`UpdateUserRoleRequest`, `UserService`/`UserServiceImpl` (`updateProfile()`/`updateRole()`), và 2 endpoint `PATCH /{id}/profile`/`PUT /{id}/role` **đã được làm sẵn từ Phase 1+** (xem Step 1+.6/1+.9/1+.10/1+.11) — không phải đợi tới Phase 5 mới tách. Lý do dời sớm: tách theo đúng ranh giới nghiệp vụ (hồ sơ vs quyền hạn) ngay từ đầu rõ ràng hơn là viết 1 DTO gộp rồi xoá đi làm lại. Phase 5 giờ **chỉ còn duy nhất 1 việc**: gắn `@PreAuthorize` lên các endpoint đã có sẵn + thêm 2 endpoint `/me` (chính chủ, dùng `@AuthenticationPrincipal` — có được từ Phase 3). Không cần đụng lại DTO/service.
 
 **Step 5.1 — Cập nhật lại toàn bộ `module/user/controller/v1/UserController.java`** — thêm `@PreAuthorize`, thêm `/me` (chính chủ, dùng `@AuthenticationPrincipal` — có được từ Phase 3)
 
@@ -1954,6 +1957,7 @@ import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.PutMapping;
@@ -2011,7 +2015,7 @@ public class UserController {
         return ResponseEntity.ok(ApiResponse.ok(userService.getById(id)));
     }
 
-    @PutMapping("/{id}/profile")
+    @PatchMapping("/{id}/profile")
     @PreAuthorize("#id == authentication.principal.id or hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<UserResponse>> updateProfile(@PathVariable Long id,
                                                                      @Valid @RequestBody UpdateProfileRequest request) {
@@ -2034,7 +2038,7 @@ public class UserController {
 }
 ```
 
-> `@AuthenticationPrincipal User user` inject thẳng entity `User` vì nó implements `UserDetails` và `JwtAuthenticationFilter` đã set nó làm principal (Step 3.1). `PUT /{id}/profile` và `PUT /{id}/role` **giữ nguyên path** từ Phase 1+ — chỉ thêm `@PreAuthorize`: profile cho phép chính chủ (`#id == authentication.principal.id`) hoặc ADMIN, role chỉ ADMIN. `GET /me` là endpoint mới, tiện cho client tự lấy hồ sơ mà không cần biết trước `id` của chính mình.
+> `@AuthenticationPrincipal User user` inject thẳng entity `User` vì nó implements `UserDetails` và `JwtAuthenticationFilter` đã set nó làm principal (Step 3.1). `PATCH /{id}/profile` và `PUT /{id}/role` **giữ nguyên path** từ Phase 1+ — chỉ thêm `@PreAuthorize`: profile cho phép chính chủ (`#id == authentication.principal.id`) hoặc ADMIN, role chỉ ADMIN. `GET /me` là endpoint mới, tiện cho client tự lấy hồ sơ mà không cần biết trước `id` của chính mình.
 
 **Verify Phase 5:** đăng nhập bằng 1 user role `USER` thường, gọi `GET /api/v1/users` → phải nhận `403`. Đăng nhập bằng user role `ADMIN` (tạo từ Phase 1+) → gọi lại → `200`.
 
@@ -2889,7 +2893,7 @@ jobs:
 ## 9. Checklist thực thi
 
 - [ ] Phase 1 — `BaseEntity`, `Role`, `User`, `UserRepository`
-- [x] Phase 1+ — `SecurityConfig` tạm permit-all, `ApiResponse` (+factory `of`), `PageResponse`, `UserResponse`, `CreateUserRequest`/`UpdateProfileRequest`/`UpdateUserRoleRequest` (đã tách DTO ngay từ Phase này, không đợi Phase 5), `UserSpecifications`, `UserService`/`UserServiceImpl`/`UserController` (CRUD + `PUT /{id}/profile` + `PUT /{id}/role`, chưa auth), `GlobalExceptionHandler` + `AppException`/`BadRequestException`/`DuplicateResourceException`/`ResourceNotFoundException`
+- [x] Phase 1+ — `SecurityConfig` tạm permit-all, `ApiResponse` (+factory `of`), `PageResponse`, `UserResponse`, `CreateUserRequest`/`UpdateProfileRequest`/`UpdateUserRoleRequest` (đã tách DTO ngay từ Phase này, không đợi Phase 5), `UserSpecifications`, `UserService`/`UserServiceImpl`/`UserController` (CRUD + `PATCH /{id}/profile` (partial update) + `PUT /{id}/role`, chưa auth), `GlobalExceptionHandler` + `AppException`/`BadRequestException`/`DuplicateResourceException`/`ResourceNotFoundException`
 - [ ] Phase 2 — JJWT dependency, `JwtService`, `UserDetailsServiceImpl`, `AuthService` (register/login), `AuthController`
 - [ ] Phase 3 — `JwtAuthenticationFilter`, entry point/access-denied handler, `CorsConfig`, cập nhật `SecurityConfig` sang STATELESS
 - [ ] Phase 4 — Redis dependency, `RedisConfig`, `RefreshTokenService` (rotation + reuse detection), cập nhật `JwtService`/`AuthService`/`AuthController`
