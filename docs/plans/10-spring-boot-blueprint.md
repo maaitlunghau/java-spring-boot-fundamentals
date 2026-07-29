@@ -752,8 +752,12 @@ app:
 ```
 
 > `secret` chỉ để chạy dev. Khi lên `application-prod.yml` (Phase 8) phải đọc từ biến môi trường, không hardcode.
+>
+> **Cập nhật 2026-07-29:** `access-token-expiration` thật đang set `300000` (5 phút) thay vì `900000` (15 phút) như ví dụ trên — giá trị ngắn hơn để dễ test luồng hết hạn token bằng tay. Giá trị `secret` thật nằm trong `application.yml` (không duplicate lại ở đây).
 
 **Step 2.3 — `common/dto/ApiResponse.java`**
+
+> **Cập nhật 2026-07-29:** đã làm sẵn từ Phase 1+ (Step 1+.2), không cần làm lại — giữ nguyên tham khảo dưới đây.
 
 Envelope response dùng chung toàn app.
 
@@ -779,6 +783,8 @@ public record ApiResponse<T>(int status, String message, T data, LocalDateTime t
 ```
 
 **Step 2.4 — Exception classes: `exception/AppException.java`**
+
+> **Cập nhật 2026-07-29:** 4 exception class này (`AppException`, `ResourceNotFoundException`, `DuplicateResourceException`, `BadRequestException`) đã tạo sẵn từ Phase 1+ để `UserServiceImpl` dùng — không tạo lại ở Phase này. Message trong code thật dùng tiếng Anh (`"User not found: " + id`), khác bản tiếng Việt dưới đây — giữ bản dưới chỉ để tham khảo ý tưởng.
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.exception;
@@ -828,19 +834,21 @@ public class BadRequestException extends AppException {
 
 **Step 2.5 — `exception/GlobalExceptionHandler.java`**
 
+> **Cập nhật 2026-07-29:** bản thật khác đáng kể so với draft ban đầu dưới đây — dùng message tiếng Anh, có thêm handler `MethodArgumentTypeMismatchException` (fix rough edge: query param sai kiểu enum trả `500` thay vì `400`, phát hiện lúc verify Phase 1+), và `BadCredentialsException` tách riêng (không gộp `DisabledException`, vì `User` chưa có field khoá tài khoản). **Chưa có** handler cho `AccessDeniedException`/`DisabledException` — để dành đúng lúc cần (`AccessDeniedException` chỉ có ý nghĩa từ Phase 5 khi `@PreAuthorize` bắt đầu chặn thật).
+
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.exception;
 
+import java.util.Arrays;
 import java.util.stream.Collectors;
 
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
-import org.springframework.security.access.AccessDeniedException;
 import org.springframework.security.authentication.BadCredentialsException;
-import org.springframework.security.authentication.DisabledException;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.ApiResponse;
 
@@ -870,19 +878,23 @@ public class GlobalExceptionHandler {
         return ResponseEntity.badRequest().body(ApiResponse.message(400, message));
     }
 
-    @ExceptionHandler({BadCredentialsException.class, DisabledException.class})
-    public ResponseEntity<ApiResponse<Void>> handleAuthFailure(Exception ex) {
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.message(401, "Sai email hoặc mật khẩu"));
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public ResponseEntity<ApiResponse<Void>> handleTypeMismatch(MethodArgumentTypeMismatchException ex) {
+        String message = String.format("%s: invalid value '%s'", ex.getName(), ex.getValue());
+        if (ex.getRequiredType() != null && ex.getRequiredType().isEnum()) {
+            message += " (expected one of: " + Arrays.toString(ex.getRequiredType().getEnumConstants()) + ")";
+        }
+        return ResponseEntity.badRequest().body(ApiResponse.message(400, message));
     }
 
-    @ExceptionHandler(AccessDeniedException.class)
-    public ResponseEntity<ApiResponse<Void>> handleAccessDenied(AccessDeniedException ex) {
-        return ResponseEntity.status(HttpStatus.FORBIDDEN).body(ApiResponse.message(403, "Không có quyền truy cập"));
+    @ExceptionHandler(BadCredentialsException.class)
+    public ResponseEntity<ApiResponse<Void>> handleBadCredentials(BadCredentialsException ex) {
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.message(401, "Invalid email or password"));
     }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneral(Exception ex) {
-        return ResponseEntity.internalServerError().body(ApiResponse.message(500, "Lỗi hệ thống"));
+        return ResponseEntity.internalServerError().body(ApiResponse.message(500, "Internal server error"));
     }
 }
 ```
@@ -897,9 +909,9 @@ import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.Size;
 
 public record RegisterRequest(
-    @NotBlank(message = "Họ tên là bắt buộc") String fullName,
-    @Email(message = "Email không hợp lệ") @NotBlank(message = "Email là bắt buộc") String email,
-    @NotBlank(message = "Mật khẩu là bắt buộc") @Size(min = 6, message = "Mật khẩu tối thiểu 6 ký tự") String password
+    @NotBlank(message = "Full name is required.") String fullName,
+    @Email(message = "Email is invalid.") @NotBlank(message = "Email is required.") String email,
+    @NotBlank(message = "Password is required.") @Size(min = 6, message = "Password must be at least 6 characters long.") String password
 ) {}
 ```
 
@@ -912,8 +924,8 @@ import jakarta.validation.constraints.Email;
 import jakarta.validation.constraints.NotBlank;
 
 public record LoginRequest(
-    @Email(message = "Email không hợp lệ") @NotBlank(message = "Email là bắt buộc") String email,
-    @NotBlank(message = "Mật khẩu là bắt buộc") String password
+    @Email(message = "Email is invalid.") @NotBlank(message = "Email is required.") String email,
+    @NotBlank(message = "Password is required.") String password
 ) {}
 ```
 
@@ -926,6 +938,8 @@ public record AuthResponse(String accessToken, long expiresIn) {}
 ```
 
 **Step 2.7 — `security/JwtService.java`**
+
+> **Cập nhật 2026-07-29:** bản thật khớp gần như y hệt draft dưới đây, chỉ khác 1 điểm: `extractClaims()` khai `public` thay vì `private` (chưa có class nào khác gọi trực tiếp, nhưng để public sẵn không sai — cân nhắc thu hẹp lại `private` khi chắc chắn không cần dùng ngoài class). Từng bị bug thật ở `extractUsername()` (gọi nhầm `.getId()` thay vì `.getSubject()` — trả về `jti` thay vì email, làm `JwtAuthenticationFilter` ở Phase 3 luôn tìm sai user) — đã tự phát hiện và fix đúng trước khi merge.
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.security;
@@ -1005,6 +1019,8 @@ public class JwtService {
 
 **Step 2.8 — `security/UserDetailsServiceImpl.java`**
 
+> **Cập nhật 2026-07-29 — bug nghiêm trọng đã gặp và fix:** bản code đầu tiên thiếu `@Service` trên class này. Hậu quả: Spring không đăng ký được bean `UserDetailsService` tuỳ biến → `AuthenticationManager` (build qua `AuthenticationConfiguration.getAuthenticationManager()` ở `SecurityConfig`) rơi vào vòng lặp cấu hình nội bộ → **`login` luôn ném `StackOverflowError` (500), kể cả đúng email/password**. Verify bằng cách in stack trace thật mới thấy `$Proxy.authenticate()` gọi lại chính nó vô hạn lần. Thêm đúng `@Service` là fix triệt để — nhớ đừng quên annotation này khi tạo `UserDetailsService` tuỳ biến ở project khác.
+
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.security;
 
@@ -1033,6 +1049,8 @@ public class UserDetailsServiceImpl implements UserDetailsService {
 ```
 
 **Step 2.9 — `module/auth/service/AuthService.java`** (bản tối giản — Phase 4 cập nhật lại)
+
+> **Cập nhật 2026-07-29:** message dùng tiếng Anh (`"Email already exists: "`), khớp convention còn lại của code (không phải tiếng Việt như draft dưới). Bản code đầu tiên có bug thật: dòng `orElseThrow` truyền nhầm `request.password()` thay vì `request.email()` vào `ResourceNotFoundException` — nếu exception này lỡ bị trigger, **mật khẩu plaintext sẽ lộ ra trong response JSON** (vì `GlobalExceptionHandler` trả thẳng `ex.getMessage()`). Đã fix đúng thành `request.email()` — draft dưới đây vốn đã đúng, chỉ code thật viết sai lúc đầu.
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.service;
@@ -1075,7 +1093,7 @@ public class AuthService {
     @Transactional
     public void register(RegisterRequest request) {
         if (userRepository.existsByEmail(request.email())) {
-            throw new DuplicateResourceException("Email đã tồn tại: " + request.email());
+            throw new DuplicateResourceException("Email already exists: " + request.email());
         }
         User user = new User(request.fullName(), request.email(),
             passwordEncoder.encode(request.password()), Role.USER);
@@ -1128,13 +1146,13 @@ public class AuthController {
     @PostMapping("/register")
     public ResponseEntity<ApiResponse<Void>> register(@Valid @RequestBody RegisterRequest request) {
         authService.register(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.message(201, "Đăng ký thành công"));
+        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.message(201, "Registered successfully"));
     }
 
     @PostMapping("/login")
     public ResponseEntity<ApiResponse<AuthResponse>> login(@Valid @RequestBody LoginRequest request) {
         AuthResponse tokens = authService.login(request);
-        return ResponseEntity.ok(ApiResponse.ok("Đăng nhập thành công", tokens));
+        return ResponseEntity.ok(ApiResponse.ok("Login successfully", tokens));
     }
 }
 ```
@@ -1146,10 +1164,22 @@ public class AuthController {
 ```bash
 curl -X POST localhost:8081/api/v1/auth/register -H "Content-Type: application/json" \
   -d '{"fullName":"Alice","email":"alice@example.com","password":"password123"}'
+# 201 Registered successfully
+
+curl -X POST localhost:8081/api/v1/auth/register -H "Content-Type: application/json" \
+  -d '{"fullName":"Alice","email":"alice@example.com","password":"password123"}'
+# 409 Email already exists — verify DuplicateResourceException handler
 
 curl -X POST localhost:8081/api/v1/auth/login -H "Content-Type: application/json" \
   -d '{"email":"alice@example.com","password":"password123"}'
+# 200 kèm accessToken thật
+
+curl -X POST localhost:8081/api/v1/auth/login -H "Content-Type: application/json" \
+  -d '{"email":"alice@example.com","password":"wrong-password"}'
+# 401 Invalid email or password — verify BadCredentialsException handler, KHÔNG được 500
 ```
+
+> Nếu case cuối trả `500` (kèm `StackOverflowError` trong console) — kiểm tra lại `UserDetailsServiceImpl` có annotation `@Service` chưa (xem note ở Step 2.8, bug thật đã gặp đúng chỗ này).
 
 ---
 
@@ -2894,7 +2924,7 @@ jobs:
 
 - [ ] Phase 1 — `BaseEntity`, `Role`, `User`, `UserRepository`
 - [x] Phase 1+ — `SecurityConfig` tạm permit-all, `ApiResponse` (+factory `of`), `PageResponse`, `UserResponse`, `CreateUserRequest`/`UpdateProfileRequest`/`UpdateUserRoleRequest` (đã tách DTO ngay từ Phase này, không đợi Phase 5), `UserSpecifications`, `UserService`/`UserServiceImpl`/`UserController` (CRUD + `PATCH /{id}/profile` (partial update) + `PUT /{id}/role`, chưa auth), `GlobalExceptionHandler` + `AppException`/`BadRequestException`/`DuplicateResourceException`/`ResourceNotFoundException`
-- [ ] Phase 2 — JJWT dependency, `JwtService`, `UserDetailsServiceImpl`, `AuthService` (register/login), `AuthController`
+- [x] Phase 2 — JJWT dependency, `JwtService`, `UserDetailsServiceImpl`, `AuthService` (register/login), `AuthController`, `GlobalExceptionHandler` + `BadCredentialsException` (401)
 - [ ] Phase 3 — `JwtAuthenticationFilter`, entry point/access-denied handler, `CorsConfig`, cập nhật `SecurityConfig` sang STATELESS
 - [ ] Phase 4 — Redis dependency, `RedisConfig`, `RefreshTokenService` (rotation + reuse detection), cập nhật `JwtService`/`AuthService`/`AuthController`
 - [ ] Phase 5 — chỉ còn gắn `@PreAuthorize` lên `UserController` (endpoint đã có sẵn từ Phase 1+) + thêm `GET /me`
