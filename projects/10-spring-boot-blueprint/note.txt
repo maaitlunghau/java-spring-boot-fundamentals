@@ -1,0 +1,5 @@
+- tại sao trong ServiceImpl (class) lại cần áp dụng @Transactional
+
+- hiện tại chỉ đang CRUD User cơ bản, chưa hoàn chỉnh production:
++ chưa kiểm tra quyền hạn thực hiện request (chưa có Auth - SecurityConfig)
++ chưa có test tự động (cần UserServiceTest / UserControllerTest)
