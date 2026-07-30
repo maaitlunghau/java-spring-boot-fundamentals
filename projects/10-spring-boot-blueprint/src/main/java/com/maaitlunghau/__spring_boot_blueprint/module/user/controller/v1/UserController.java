@@ -3,6 +3,8 @@ package com.maaitlunghau.__spring_boot_blueprint.module.user.controller.v1;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
+import org.springframework.security.access.prepost.PreAuthorize;
+import org.springframework.security.core.annotation.AuthenticationPrincipal;
 import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PatchMapping;
@@ -21,6 +23,7 @@ import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdatePr
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.request.UpdateUserRoleRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.dto.response.UserResponse;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
+import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.service.UserService;
 
 import jakarta.validation.Valid;
@@ -36,6 +39,7 @@ public class UserController {
     }
 
     @GetMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<PageResponse<UserResponse>>> search(
         @RequestParam(required = false) String keyword,
         @RequestParam(required = false) Role role,
@@ -45,11 +49,18 @@ public class UserController {
     }
 
     @GetMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<UserResponse>> getById(@PathVariable Long id) {
         return ResponseEntity.ok(ApiResponse.ok(userService.getById(id)));
     }
 
+    @GetMapping("/me")
+    public ResponseEntity<ApiResponse<UserResponse>> me(@AuthenticationPrincipal User user) {
+        return ResponseEntity.ok(ApiResponse.ok(userService.getById(user.getId())));
+    }
+
     @PostMapping
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<UserResponse>> create(@Valid @RequestBody CreateUserRequest request) {
         UserResponse created = userService.create(request);
         return ResponseEntity
@@ -58,6 +69,7 @@ public class UserController {
     }
 
     @PatchMapping("/{id}/profile")
+    @PreAuthorize("#id == authentication.principal.id or hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<UserResponse>> updateProfile(
         @PathVariable Long id,
         @Valid @RequestBody UpdateProfileRequest request
@@ -67,6 +79,7 @@ public class UserController {
     }
 
     @PutMapping("/{id}/role")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<UserResponse>> updateRole(
         @PathVariable Long id,
         @Valid @RequestBody UpdateUserRoleRequest request
@@ -76,6 +89,7 @@ public class UserController {
     }
 
     @DeleteMapping("/{id}")
+    @PreAuthorize("hasRole('ADMIN')")
     public ResponseEntity<ApiResponse<Void>> delete(@PathVariable Long id) {
         userService.delete(id);
         return ResponseEntity.ok(ApiResponse.message(200, "Deleted successfully"));
