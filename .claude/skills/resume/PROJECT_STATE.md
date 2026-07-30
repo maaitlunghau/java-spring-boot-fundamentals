@@ -1,4 +1,4 @@
-Last synced commit: 11dcc98084c229761b50edbf0fd12f5fc77ccd7f (2026-07-30, branch feature/spring-boot-blueprint)
+Last synced commit: 7ca1fc287ed4038ce0d408cea0573bf5d1069a4a (2026-07-30, branch feature/spring-boot-blueprint)
 
 # Project State — java-spring-ecosystem-fundamentals
 
@@ -14,7 +14,7 @@ Every commit message: `type(scope): subject`, single line, all lowercase, ≤60 
 
 - Default branch: `main`. `feature/user-management` (all of project 09's work) was merged via PR #15.
 - Project 09's email-verification bypass is committed to `main`: `aaca986 fix(user-management): comment out email verification check`. This is a **known temporary hack currently shipped**, not just a local uncommitted workaround — see Project 09 section.
-- Active work is on `feature/spring-boot-blueprint` (project 10), currently 24 commits ahead of `main` / not yet merged, pushed to `origin/feature/spring-boot-blueprint`. `main` is still at `a2a332f` (project 10's initial README only) — none of project 10's actual code (entities/services/controllers/JWT) has reached `main` yet.
+- Active work is on `feature/spring-boot-blueprint` (project 10), currently 47 commits ahead of `main` / not yet merged. `main` is still at `a2a332f` (project 10's initial README only) — none of project 10's actual code (entities/services/controllers/JWT) has reached `main` yet.
 
 ## Sub-projects (01–09)
 
@@ -68,19 +68,19 @@ Root `package.json` lists `lint-staged` as a devDependency but it is **not** wir
 
 **Architecture — module-per-feature, not layer-per-project:** `module/auth/` and `module/user/` each contain their own full stack (`controller/v1/service/repository/entity/dto/{request,response}/mapper`). Cross-module concerns live at top level: `common/` (`ApiResponse` envelope, `BaseEntity` — id/createdAt/updatedAt/version, all entities extend it), `config/`, `security/`, `exception/`, `aspect/` (`LoggingAspect`), `scheduler/` (`CleanupScheduledTask`), `util/`. This is a deliberate deviation from `.claude/rules/architecture.md`'s plain layered structure — intentional for this project, not a violation.
 
-**What's implemented as of `11dcc98`:**
+**What's implemented as of `7ca1fc2` (Phase 1 through Phase 4 of the roadmap):**
 - `module/user`: `User` entity (extends `BaseEntity`) + `Role` enum, `UserRepository` + `UserSpecifications` (dynamic filter/search via JPA `Specification`), `UserService`/`UserServiceImpl`, `UserController` with CRUD + partial profile update via `PATCH` (`UpdateProfileRequest`), role update DTO.
-- `module/auth`: `AuthService.register()` (checks `existsByEmail`, encodes password, defaults `Role.USER`) and `.login()` (delegates to `AuthenticationManager.authenticate`, then issues a JWT via `JwtService`). `AuthController` exposes `POST /api/v1/auth/register` and `/login`, wrapped in the `ApiResponse<T>` envelope.
-- `security/`: `JwtService` (token issuance) and `UserDetailsServiceImpl` exist.
-- `GlobalExceptionHandler` was patched (`3a37778`) to map `BadCredentialsException` → HTTP 401 for the login endpoint.
+- `module/auth`: `AuthService`/`AuthServiceImpl` (`register()`, `login()`, `refreshToken()`), `AuthController` exposes `POST /api/v1/auth/{register,login,refresh}`, wrapped in the `ApiResponse<T>` envelope. `AuthService` was split into interface + `service/impl/AuthServiceImpl` this round, matching the project's own stated module convention (`RefreshTokenService`/`RefreshTokenServiceImpl` got the same treatment).
+- `security/`: `JwtService` (access tokens now carry an `sid` claim = session id) and `UserDetailsServiceImpl`.
+- **Phase 3 (JWT enforcement, resolved earlier):** `SecurityConfig` is `STATELESS`, `JwtAuthenticationFilter` wired via `addFilterBefore(..., UsernamePasswordAuthenticationFilter.class)`, `CustomAuthenticationEntryPoint`/`CustomAccessDeniedHandler` registered, `CorsConfig` has a real `CorsConfigurationSource` bean. `UserController` CRUD is actually protected now.
+- **Phase 4 (refresh tokens, just implemented):** refresh tokens are stored in **MySQL via JPA** (`module/auth/entity/RefreshToken` + `RefreshTokenRepository`), *not* Redis — a deliberate design choice made this round (see `docs/plans/10-spring-boot-blueprint.md` §1/§8 for the full "why", not duplicated here). Rotation uses `@Lock(PESSIMISTIC_WRITE)` for real atomicity (no Redis-style grace window needed). Each token has both an idle TTL (`expiresAt`, resets on rotate) and an absolute TTL (`absoluteExpiresAt`, fixed from first login) — `RevokeReason` enum (`LOGOUT`/`REUSE_DETECTED`/`ROTATED`) records why a token died. `CleanupScheduledTask` purges expired/long-revoked rows (`@EnableScheduling` added to `Application.java`). Landed as 14 small commits, `d7394d1`..`7ca1fc2`.
+- **Review-and-fix cycle already happened for Phase 4** — first implementation pass had real bugs (raw token stored unhashed instead of its SHA-256 hash → every first `/refresh` after login would fail; idle/absolute TTL arguments swapped; `LocalDateTime now` was a stale singleton-bean field computed once at startup instead of per-call; `AuthServiceImpl`/`AuthController` were wired to concrete `*Impl` classes instead of the interfaces, which would have broken the `@WebMvcTest`/mock-based tests Phase 7 calls for). All confirmed fixed and the module now compiles clean (`./mvnw compile`) — but **nobody has run `spring-boot:run` and exercised the login→refresh→rotate flow against a live MySQL yet**. Treat "compiles" as verified, "actually works end-to-end" as not yet verified.
 
-**Known gap — auth is not actually enforced yet:** `SecurityConfig.java` still does `csrf().disable()` + `anyRequest().permitAll()` and has no `JwtAuthenticationFilter` wired into the chain. So login/register work and a real JWT is issued, but **no endpoint (including `UserController`'s CRUD) currently checks that token** — everything is open. This is the single biggest next-step gap, not a bug to "fix" so much as unfinished scaffolding (the project's own README TODO list still says "Implement `SecurityConfig` (JWT stateless)").
-
-**Different auth transport than project 09:** login returns the access token as **JSON body** (`AuthResponse{accessToken, expiresIn}`), not an httpOnly cookie — no refresh-token flow yet either. Don't assume project 09's cookie/CSRF/refresh-token design carries over here; it doesn't (yet).
+**Different auth transport than project 09:** login/refresh return the access token as **JSON body** (`AuthResponse{accessToken, refreshToken, expiresIn}`), not an httpOnly cookie. Don't assume project 09's cookie/CSRF design carries over here; it doesn't.
 
 **Still scaffolding-only / explicitly empty per the project's own README TODO:** `Dockerfile`, `docker-compose.yml`, `.env.example`, `.github/workflows/ci.yml`, `.github/workflows/cd.yml` are all 0-byte placeholder files. `RedisConfig` exists but the Redis dependency itself hasn't been added yet (would fail to start if Redis features were actually exercised). No Flyway migrations — `ddl-auto: update` only. No `application-dev.yml`/`application-prod.yml` split.
 
-**Roadmap doc:** [`docs/plans/10-spring-boot-blueprint.md`](../../docs/plans/10-spring-boot-blueprint.md) (~2900 lines) tracks phased implementation in detail and has been kept in sync commit-by-commit so far (`docs(blueprint): sync roadmap with ...` commits alongside each feature commit) — check it for the authoritative next-step order before assuming what's next.
+**Roadmap doc:** [`docs/plans/10-spring-boot-blueprint.md`](../../docs/plans/10-spring-boot-blueprint.md) (~3200 lines) tracks phased implementation in detail — Phase 4 section was substantially redesigned in place (`32443b8`) before being implemented, so the doc reflects the MySQL-backed design, not the original Redis-backed draft. Check it for the authoritative next-step order (Phase 5 onward: `@PreAuthorize` on existing user CRUD, then Phase 6 logout/blacklist/rate-limit/sessions) before assuming what's next.
 
 ## How to tell if this file is stale
 

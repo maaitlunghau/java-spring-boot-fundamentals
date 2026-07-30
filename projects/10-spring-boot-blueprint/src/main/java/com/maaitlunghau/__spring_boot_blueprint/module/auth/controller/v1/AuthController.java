@@ -4,15 +4,19 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.ApiResponse;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.LoginRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.RefreshTokenRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.RegisterRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response.AuthResponse;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.AuthService;
+import com.maaitlunghau.__spring_boot_blueprint.util.RequestUtils;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 
 @RestController
@@ -28,12 +32,44 @@ public class AuthController {
     @PostMapping("/register")
     public ResponseEntity<ApiResponse<Void>> register(@Valid @RequestBody RegisterRequest request) {
         authService.register(request);
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.message(201, "Registered successfully"));
+        return ResponseEntity
+                    .status(HttpStatus.CREATED)
+                    .body(ApiResponse.message(201, "Registered successfully"));
     }
 
     @PostMapping("/login")
-    public ResponseEntity<ApiResponse<AuthResponse>> login(@Valid @RequestBody LoginRequest request) {
-        AuthResponse tokens = authService.login(request);
+    public ResponseEntity<ApiResponse<AuthResponse>> login(
+        @Valid @RequestBody LoginRequest request,
+        HttpServletRequest servletRequest
+    ) {
+        AuthResponse tokens = authService.login(
+            request,
+            RequestUtils.userAgent(servletRequest),
+            RequestUtils.clientIp(servletRequest)
+        );
+
         return ResponseEntity.ok(ApiResponse.ok("Login successfully", tokens));
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<ApiResponse<AuthResponse>> refresh(
+        @Valid @RequestBody RefreshTokenRequest request,
+        HttpServletRequest servletRequest
+    ) {
+        AuthResponse tokens = authService.refreshToken(
+            request.refreshToken(), 
+            RequestUtils.userAgent(servletRequest),
+            RequestUtils.clientIp(servletRequest)
+        );
+
+        return ResponseEntity.ok(ApiResponse.ok("Created new token successfully!", tokens));
+    }
+
+    @PostMapping("/logout")
+    public ResponseEntity<ApiResponse<Void>> logout(@RequestHeader("Authorization") String authHeader) {
+        String token = authHeader.startsWith("Bearer ") ? authHeader.substring(7) : authHeader;
+        authService.logout(token);
+
+        return ResponseEntity.ok(ApiResponse.message(200, "Logout successfully"));
     }
 }

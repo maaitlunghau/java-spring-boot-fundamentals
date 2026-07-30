@@ -30,13 +30,14 @@ public class JwtService {
         this.accessTokenExpirationMs = accessTokenExpirationMs;
     }
 
-    public String generateAccessToken(User user) {
+    public String generateAccessToken(User user, String sessionId) {
         Instant now = Instant.now();
 
         return Jwts.builder()
             .subject(user.getEmail())
             .id(UUID.randomUUID().toString())
             .claim("role", user.getRole().name())
+            .claim("sid", sessionId)
             .issuedAt(Date.from(now))
             .expiration(Date.from(now.plusMillis(accessTokenExpirationMs)))
             .signWith(key)
@@ -49,6 +50,10 @@ public class JwtService {
 
     public String extractJti(String token) {
         return extractClaims(token).getId();
+    }
+
+    public String extractSessionId(String token) {
+        return extractClaims(token).get("sid", String.class);
     }
 
     public boolean isTokenValid(String token, String expectedUsername) {
