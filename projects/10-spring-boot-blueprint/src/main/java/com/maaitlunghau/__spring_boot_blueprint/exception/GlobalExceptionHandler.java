@@ -18,17 +18,23 @@ public class GlobalExceptionHandler {
 
     @ExceptionHandler(ResourceNotFoundException.class)
     public ResponseEntity<ApiResponse<Void>> handleNotFound(ResourceNotFoundException ex) {
-        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(ApiResponse.message(404, ex.getMessage()));
+        return ResponseEntity
+            .status(HttpStatus.NOT_FOUND)
+            .body(ApiResponse.message(404, ex.getMessage()));
     }
 
     @ExceptionHandler(DuplicateResourceException.class)
     public ResponseEntity<ApiResponse<Void>> handleDuplicate(DuplicateResourceException ex) {
-        return ResponseEntity.status(HttpStatus.CONFLICT).body(ApiResponse.message(409, ex.getMessage()));
+        return ResponseEntity
+            .status(HttpStatus.CONFLICT)
+            .body(ApiResponse.message(409, ex.getMessage()));
     }
 
     @ExceptionHandler(BadRequestException.class)
     public ResponseEntity<ApiResponse<Void>> handleBadRequest(BadRequestException ex) {
-        return ResponseEntity.badRequest().body(ApiResponse.message(400, ex.getMessage()));
+        return ResponseEntity
+            .badRequest()
+            .body(ApiResponse.message(400, ex.getMessage()));
     }
 
     @ExceptionHandler(MethodArgumentNotValidException.class)
@@ -36,7 +42,10 @@ public class GlobalExceptionHandler {
         String message = ex.getBindingResult().getFieldErrors().stream()
             .map(e -> e.getField() + ": " + e.getDefaultMessage())
             .collect(Collectors.joining("; "));
-        return ResponseEntity.badRequest().body(ApiResponse.message(400, message));
+
+        return ResponseEntity
+            .badRequest()
+            .body(ApiResponse.message(400, message));
     }
 
     @ExceptionHandler(MethodArgumentTypeMismatchException.class)
@@ -45,16 +54,37 @@ public class GlobalExceptionHandler {
         if (ex.getRequiredType() != null && ex.getRequiredType().isEnum()) {
             message += " (expected one of: " + Arrays.toString(ex.getRequiredType().getEnumConstants()) + ")";
         }
-        return ResponseEntity.badRequest().body(ApiResponse.message(400, message));
+
+        return ResponseEntity
+            .badRequest()
+            .body(ApiResponse.message(400, message));
     }
 
     @ExceptionHandler(BadCredentialsException.class)
     public ResponseEntity<ApiResponse<Void>> handleBadCredentials(BadCredentialsException ex) {
-        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ApiResponse.message(401, "Invalid email or password"));
+        return ResponseEntity
+            .status(HttpStatus.UNAUTHORIZED)
+            .body(ApiResponse.message(401, "Invalid email or password"));
+    }
+
+    @ExceptionHandler(InvalidRefreshTokenException.class)
+    public ResponseEntity<ApiResponse<Void>> handleInvalidRefresh(InvalidRefreshTokenException ex) {
+        return ResponseEntity
+            .status(HttpStatus.UNAUTHORIZED)
+            .body(ApiResponse.message(401, ex.getMessage()));
+    }
+
+    @ExceptionHandler(RefreshTokenReuseException.class)
+    public ResponseEntity<ApiResponse<Void>> handleReuse(RefreshTokenReuseException ex) {
+        return ResponseEntity
+            .status(HttpStatus.UNAUTHORIZED)
+            .body(ApiResponse.message(401, ex.getMessage()));
     }
 
     @ExceptionHandler(Exception.class)
     public ResponseEntity<ApiResponse<Void>> handleGeneral(Exception ex) {
-        return ResponseEntity.internalServerError().body(ApiResponse.message(500, "Internal server error"));
+        return ResponseEntity
+            .internalServerError()
+            .body(ApiResponse.message(500, "Internal server error"));
     }
 }
