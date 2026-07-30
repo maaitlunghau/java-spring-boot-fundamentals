@@ -9,10 +9,13 @@ import org.springframework.web.bind.annotation.RestController;
 
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.ApiResponse;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.LoginRequest;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.RefreshTokenRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.RegisterRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response.AuthResponse;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.AuthService;
+import com.maaitlunghau.__spring_boot_blueprint.util.RequestUtils;
 
+import jakarta.servlet.http.HttpServletRequest;
 import jakarta.validation.Valid;
 
 @RestController
@@ -34,8 +37,30 @@ public class AuthController {
     }
 
     @PostMapping("/login")
-    public ResponseEntity<ApiResponse<AuthResponse>> login(@Valid @RequestBody LoginRequest request) {
-        AuthResponse tokens = authService.login(request);
+    public ResponseEntity<ApiResponse<AuthResponse>> login(
+        @Valid @RequestBody LoginRequest request,
+        HttpServletRequest servletRequest
+    ) {
+        AuthResponse tokens = authService.login(
+            request,
+            RequestUtils.userAgent(servletRequest),
+            RequestUtils.clientIp(servletRequest)
+        );
+
         return ResponseEntity.ok(ApiResponse.ok("Login successfully", tokens));
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<ApiResponse<AuthResponse>> refresh(
+        @Valid @RequestBody RefreshTokenRequest request,
+        HttpServletRequest servletRequest
+    ) {
+        AuthResponse tokens = authService.refreshToken(
+            request.refreshToken(), 
+            RequestUtils.userAgent(servletRequest),
+            RequestUtils.clientIp(servletRequest)
+        );
+
+        return ResponseEntity.ok(ApiResponse.ok("Created new token successfully!", tokens));
     }
 }
