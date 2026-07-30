@@ -10,6 +10,7 @@ import org.springframework.security.web.authentication.WebAuthenticationDetailsS
 import org.springframework.stereotype.Component;
 import org.springframework.web.filter.OncePerRequestFilter;
 
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.TokenBlacklistService;
 import com.maaitlunghau.__spring_boot_blueprint.security.JwtService;
 
 import io.jsonwebtoken.JwtException;
@@ -26,16 +27,21 @@ import jakarta.servlet.http.HttpServletResponse;
  * 
  * Không tự trả 401/403 - để EntryPoint/AccessDeniedHandler xử lí.
  */
-
 @Component
 public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
     private final JwtService jwtService;
     private final UserDetailsService userDetailsService;
+    private final TokenBlacklistService tokenBlacklistService;
 
-    public JwtAuthenticationFilter(JwtService jwtService, UserDetailsService userDetailsService) {
+    public JwtAuthenticationFilter(
+        JwtService jwtService, 
+        UserDetailsService userDetailsService,
+        TokenBlacklistService tokenBlacklistService
+    ) {
         this.jwtService = jwtService;
         this.userDetailsService = userDetailsService;
+        this.tokenBlacklistService = tokenBlacklistService;
     }
   
     @Override
@@ -50,7 +56,12 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 
         try {
             String username = jwtService.extractUsername(token);
-            if (username != null && SecurityContextHolder.getContext().getAuthentication() == null) {
+            String jti = jwtService.extractJti(token);
+
+            if (username != null && 
+                SecurityContextHolder.getContext().getAuthentication() == null && 
+                !tokenBlacklistService.isBlacklisted(jti)
+            ) {
             // tại sao lại check SecurityContextHolder.getContext().getAuthentication() == null ?
             // - Vì trong 1 request, filter này có thể bị đi qua lại hoặc về sau có thể có thêm cơ chế xác thực khác chạy trước nó.
             // - Check này là một câu hỏi phòng thủ: "đã có ai gắn thẻ tên vào context chưa?"
@@ -85,7 +96,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
                     );
 
                     auth.setDetails(new WebAuthenticationDetailsSource().buildDetails(request));
-                    SecurityContextHolder.getContext().setAuthentication(auth); // dòng quan trọng nhất
+                    SecurityContextHolder.getContext().setAuthentication(auth); // QUAN TRỌNG NHẤT
                 }
             }
 
