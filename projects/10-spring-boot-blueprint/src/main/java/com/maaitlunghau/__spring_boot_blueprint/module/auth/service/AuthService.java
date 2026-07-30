@@ -8,4 +8,5 @@ public interface AuthService {
     public void register(RegisterRequest request);
     public AuthResponse login(LoginRequest request, String deviceInfo, String info);
     public AuthResponse refreshToken(String rawRefreshToken, String deviceInfo, String ip);
+    public void logout(String accessToken);
 }

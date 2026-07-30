@@ -14,8 +14,10 @@ import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.LoginReq
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.RegisterRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response.AuthResponse;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response.RotationResult;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RevokeReason;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.AuthService;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.RefreshTokenService;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.TokenBlacklistService;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.repository.UserRepository;
@@ -30,19 +32,22 @@ public class AuthServiceImpl implements AuthService {
     private final AuthenticationManager authenticationManager;
     private final JwtService jwtService;
     private final RefreshTokenService refreshTokenService;
+    private final TokenBlacklistService tokenBlacklistService;
 
     public AuthServiceImpl(
         UserRepository userRepository, 
         PasswordEncoder passwordEncoder,
         AuthenticationManager authenticationManager, 
         JwtService jwtService,
-        RefreshTokenService refreshTokenService
+        RefreshTokenService refreshTokenService,
+        TokenBlacklistService tokenBlacklistService
     ) {
         this.userRepository = userRepository;
         this.passwordEncoder = passwordEncoder;
         this.authenticationManager = authenticationManager;
         this.jwtService = jwtService;
         this.refreshTokenService = refreshTokenService;
+        this.tokenBlacklistService = tokenBlacklistService;
     }
 
     @Transactional
@@ -92,5 +97,20 @@ public class AuthServiceImpl implements AuthService {
             rotation.newRawRefreshToken(), 
             jwtService.getAccessTokenExpirationSeconds()
         );
+    }
+
+    @Override
+    public void logout(String accessToken) {
+        String jti = jwtService.extractJti(accessToken);
+        String sessionId = jwtService.extractSessionId(accessToken);
+        String username = jwtService.extractUsername(accessToken);
+        long remaining = jwtService.remainingSeconds(accessToken);
+
+        tokenBlacklistService.blacklist(jti, remaining);
+
+        User user = userRepository.findByEmail(username)
+            .orElseThrow(() -> new ResourceNotFoundException("User", username));
+
+        refreshTokenService.revokeSession(user.getId(), sessionId, RevokeReason.LOGOUT);
     }
 }
