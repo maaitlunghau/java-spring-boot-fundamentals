@@ -25,4 +25,5 @@ app:
     secret: "ZsJvY2i+Jz6mP6R8mI6B6j4m7GgR2Kk9i5cJv3Kx1lYf9L8sVwN0eQ2nT5bUaP7d0rMxYyQnE8aLkV3bJtF6hQ=="
     access-token-expiration: 300000
     refresh-token-expiration: 604800000
+    refresh-token-absolute-expiration: 2592000000
 
