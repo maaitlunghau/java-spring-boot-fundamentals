@@ -1,4 +1,4 @@
-Last synced commit: aaca986d7cf63f6cc26eb3748d1b9459d4cd4fe0 (2026-07-28, branch main)
+Last synced commit: 11dcc98084c229761b50edbf0fd12f5fc77ccd7f (2026-07-30, branch feature/spring-boot-blueprint)
 
 # Project State — java-spring-ecosystem-fundamentals
 
@@ -14,6 +14,7 @@ Every commit message: `type(scope): subject`, single line, all lowercase, ≤60 
 
 - Default branch: `main`. `feature/user-management` (all of project 09's work) was merged via PR #15.
 - Project 09's email-verification bypass is committed to `main`: `aaca986 fix(user-management): comment out email verification check`. This is a **known temporary hack currently shipped**, not just a local uncommitted workaround — see Project 09 section.
+- Active work is on `feature/spring-boot-blueprint` (project 10), currently 24 commits ahead of `main` / not yet merged, pushed to `origin/feature/spring-boot-blueprint`. `main` is still at `a2a332f` (project 10's initial README only) — none of project 10's actual code (entities/services/controllers/JWT) has reached `main` yet.
 
 ## Sub-projects (01–09)
 
@@ -27,13 +28,14 @@ Every commit message: `type(scope): subject`, single line, all lowercase, ≤60 
 | 06-spring-security-jwt | JWT auth, MySQL | Full layers. Has `docker-compose.yml`. |
 | 07-spring-security-oauth2-mvc | OAuth2 social login (Google/GitHub) | No `dto/` package unlike sibling security projects. No `docker-compose.yml`. |
 | 08-spring-security-auth0-mvc | Auth0 OIDC | Minimal layers (config+controller only). No `docker-compose.yml`. |
-| 09-fullstack-user-management | Full backend+frontend, most mature/active project | See dedicated section below. |
+| 09-fullstack-user-management | Full backend+frontend, most mature project (merged to `main`) | See dedicated section below. |
+| 10-spring-boot-blueprint | Production-style REST API blueprint/template (module-per-feature, not layer-per-topic like 01-09), currently on unmerged `feature/spring-boot-blueprint` | See dedicated section below. |
 
-**Cross-cutting gap:** projects 01–08 have zero real tests — only the Spring Boot–generated `contextLoads()` stub — despite `tech-defaults.md` mandating JUnit5/Mockito/`@DataJpaTest`/`@WebMvcTest`. Project 09's backend is the same; its frontend has **no test framework installed at all** (no Vitest/RTL, zero `*.test.*` files).
+**Cross-cutting gap:** projects 01–08 have zero real tests — only the Spring Boot–generated `contextLoads()` stub — despite `tech-defaults.md` mandating JUnit5/Mockito/`@DataJpaTest`/`@WebMvcTest`. Project 09's backend is the same; its frontend has **no test framework installed at all** (no Vitest/RTL, zero `*.test.*` files). Project 10 is the same again — only `ApplicationTests.java` (`contextLoads()` stub), despite the project's own README explicitly listing unit/slice/integration tests as a TODO.
 
-**Docs currency:** root `README.md` documents only projects 01–08 — **project 09 is entirely missing from it**, despite having its own `docs/guides/09-fullstack-user-management.md` and `docs/plans/09-fullstack-user-management.md`. Biggest doc gap in the repo.
+**Docs currency:** root `README.md` documents only projects 01–08 — **projects 09 and 10 are both entirely missing from it**, despite each having its own `docs/guides/*.md` (09 only) and `docs/plans/*.md` (both). Biggest doc gap in the repo.
 
-Root `package.json` lists `lint-staged` as a devDependency; unconfirmed whether it's actually wired into the Husky pre-commit hook.
+Root `package.json` lists `lint-staged` as a devDependency but it is **not** wired up anywhere — `.husky/pre-commit` is a no-op (just echoes "husky: pre-commit ok"), no `.lintstagedrc`/`lint-staged` config exists. Only `.husky/commit-msg` actually enforces anything (message format: `type(scope): subject`, lowercase, single line, ≤60 chars, types `feat|fix|docs|style|refactor|perf|test|chore|revert|ci`).
 
 ## Project 09 — fullstack-user-management (deep context)
 
@@ -59,6 +61,26 @@ Root `package.json` lists `lint-staged` as a devDependency; unconfirmed whether 
 - Soft delete only sets `deleted_at`; no purge job (hard delete) or restore endpoint yet.
 - Deleting an ADMIN user should return 403, currently returns 400 (`BadRequestException`).
 - Investigate why soft-delete relations are eager-loading instead of lazy.
+
+## Project 10 — spring-boot-blueprint (deep context)
+
+**Purpose:** unlike 01-09 (one topic each), this is meant as a reusable production-style REST API template — full auth/user CRUD, security, validation, error handling, caching, testing pyramid, observability, CI/CD. Package root `com.maaitlunghau.__spring_boot_blueprint`. Spring Boot **4.1.0** (newer major than projects 01-09) — note the renamed starters this pulls in: `spring-boot-starter-webmvc` (not `-web`), and *separate* test starters per concern (`spring-boot-starter-data-jpa-test`, `-security-test`, `-validation-test`, `-webmvc-test`) instead of one `spring-boot-starter-test`.
+
+**Architecture — module-per-feature, not layer-per-project:** `module/auth/` and `module/user/` each contain their own full stack (`controller/v1/service/repository/entity/dto/{request,response}/mapper`). Cross-module concerns live at top level: `common/` (`ApiResponse` envelope, `BaseEntity` — id/createdAt/updatedAt/version, all entities extend it), `config/`, `security/`, `exception/`, `aspect/` (`LoggingAspect`), `scheduler/` (`CleanupScheduledTask`), `util/`. This is a deliberate deviation from `.claude/rules/architecture.md`'s plain layered structure — intentional for this project, not a violation.
+
+**What's implemented as of `11dcc98`:**
+- `module/user`: `User` entity (extends `BaseEntity`) + `Role` enum, `UserRepository` + `UserSpecifications` (dynamic filter/search via JPA `Specification`), `UserService`/`UserServiceImpl`, `UserController` with CRUD + partial profile update via `PATCH` (`UpdateProfileRequest`), role update DTO.
+- `module/auth`: `AuthService.register()` (checks `existsByEmail`, encodes password, defaults `Role.USER`) and `.login()` (delegates to `AuthenticationManager.authenticate`, then issues a JWT via `JwtService`). `AuthController` exposes `POST /api/v1/auth/register` and `/login`, wrapped in the `ApiResponse<T>` envelope.
+- `security/`: `JwtService` (token issuance) and `UserDetailsServiceImpl` exist.
+- `GlobalExceptionHandler` was patched (`3a37778`) to map `BadCredentialsException` → HTTP 401 for the login endpoint.
+
+**Known gap — auth is not actually enforced yet:** `SecurityConfig.java` still does `csrf().disable()` + `anyRequest().permitAll()` and has no `JwtAuthenticationFilter` wired into the chain. So login/register work and a real JWT is issued, but **no endpoint (including `UserController`'s CRUD) currently checks that token** — everything is open. This is the single biggest next-step gap, not a bug to "fix" so much as unfinished scaffolding (the project's own README TODO list still says "Implement `SecurityConfig` (JWT stateless)").
+
+**Different auth transport than project 09:** login returns the access token as **JSON body** (`AuthResponse{accessToken, expiresIn}`), not an httpOnly cookie — no refresh-token flow yet either. Don't assume project 09's cookie/CSRF/refresh-token design carries over here; it doesn't (yet).
+
+**Still scaffolding-only / explicitly empty per the project's own README TODO:** `Dockerfile`, `docker-compose.yml`, `.env.example`, `.github/workflows/ci.yml`, `.github/workflows/cd.yml` are all 0-byte placeholder files. `RedisConfig` exists but the Redis dependency itself hasn't been added yet (would fail to start if Redis features were actually exercised). No Flyway migrations — `ddl-auto: update` only. No `application-dev.yml`/`application-prod.yml` split.
+
+**Roadmap doc:** [`docs/plans/10-spring-boot-blueprint.md`](../../docs/plans/10-spring-boot-blueprint.md) (~2900 lines) tracks phased implementation in detail and has been kept in sync commit-by-commit so far (`docs(blueprint): sync roadmap with ...` commits alongside each feature commit) — check it for the authoritative next-step order before assuming what's next.
 
 ## How to tell if this file is stale
 
