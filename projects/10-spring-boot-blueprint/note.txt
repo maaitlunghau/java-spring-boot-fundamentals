@@ -7,3 +7,10 @@
 - không hiểu khái niệm Servlet / DispatcherServlet / HttpServletRequest là gì.
 
 - hiểu và phân biệt được sự khác nhau giữa @Component và @Bean
+
+- xem lại về logic Scheduled (CRON Job)
+
+- tìm hiểu PESSIMISTIC_WRITE là gì trong repository 
+@Lock(LockModeType.PESSIMISTIC_WRITE)
+@Query("SELECT rt FROM RefreshToken rt WHERE rt.tokenHash = :tokenHash")
+Optional<RefreshToken> findByTokenHashForUpdate(@Param("tokenHash") String tokenHash);
