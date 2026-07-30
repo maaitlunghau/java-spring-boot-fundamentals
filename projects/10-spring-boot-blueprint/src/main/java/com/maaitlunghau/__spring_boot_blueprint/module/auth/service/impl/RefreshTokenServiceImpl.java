@@ -73,6 +73,7 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
      * Ném RefreshTokenReuseException nếu token đã revoked trước đó bị dùng lại (theft).
      */
     @Override
+    @Transactional
     public RotationResult rotate(String rawOldToken, String deviceInfo, String ip) {
         String oldHash = hash(rawOldToken);
         RefreshToken token = refreshTokenRepository.findByTokenHashForUpdate(oldHash)
@@ -107,6 +108,7 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
     }
 
     @Override
+    @Transactional
     public void revokeSession(Long userId, String sessionId, RevokeReason reason) {
         refreshTokenRepository.findByUserIdAndSessionIdAndRevokedFalse(userId, sessionId)
             .ifPresent(t -> t.revoke(reason));
@@ -117,6 +119,7 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
     * Hiện chỉ gọi khi phát hiện reuse 
     */
     @Override
+    @Transactional
     public void revokeAllSessions(Long userId, RevokeReason reason) {
         refreshTokenRepository.findByUserIdAndRevokedFalseOrderByCreatedAtDesc(userId)
             .forEach(t -> t.revoke(reason));
