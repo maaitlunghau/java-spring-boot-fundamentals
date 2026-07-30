@@ -1,6 +1,6 @@
 # Plan — Project 10: Spring Boot Blueprint
 
-> **Loại tài liệu:** Kế hoạch (roadmap) — phản ánh những gì **đã quyết định**, chưa implement. Cập nhật lần cuối 2026-07-28.
+> **Loại tài liệu:** Kế hoạch (roadmap) — phản ánh những gì **đã quyết định**, chưa implement. Cập nhật lần cuối 2026-07-30.
 > Khác với project 01–09 (mỗi project học 1 chủ đề), project 10 là **blueprint production-ready**: khung chuẩn để luyện viết REST API hoàn chỉnh với Spring Data JPA + Spring Security, đủ tiêu chuẩn làm nền cho dự án thực tế (chuẩn bị cho project ở trường).
 
 ---
@@ -9,8 +9,8 @@
 
 - Luyện lại toàn bộ vòng đời viết API production, nhưng lần này **tự thiết kế từ đầu** thay vì follow theo hướng dẫn từng bước như 01–09.
 - Có nền C#/Node.js-Express từ trước → tập trung vào phần **idiom riêng của Spring** (Spring Security filter chain, Spring Data JPA, DI qua constructor) thay vì học lại khái niệm REST/JWT cơ bản.
-- 2 module trọng tâm: **`user`** (quản lý user, CRUD chuẩn) và **`auth`** (authentication nâng cao — JWT access + refresh token có Redis, rotation, reuse detection, multi-device session).
-- So với JWT của project 06/09 (refresh token lưu **MySQL**): project 10 chuyển sang lưu ở **Redis** — TTL tự động hết hạn, không cần cron purge job.
+- 2 module trọng tâm: **`user`** (quản lý user, CRUD chuẩn) và **`auth`** (authentication nâng cao — JWT access + refresh token lưu DB, rotation, reuse detection, multi-device session).
+- **Quyết định lưu trữ (2026-07-30):** refresh token lưu ở **MySQL** qua JPA Entity — giống hướng của project 06/09, đây là pattern chuẩn/phổ biến nhất cho refresh token (durable, không mất khi Redis restart/evict). Redis chỉ giữ vai trò lưu trạng thái của **access token** (blacklist khi logout, Phase 6) và rate-limit counter — dữ liệu chấp nhận mất được (TTL ngắn, mất thì chỉ ảnh hưởng tối đa vài phút), đúng chỗ Redis mạnh nhất. Đổi lại việc lưu DB không có TTL tự động như Redis, nên Phase 4 có thêm 1 scheduled job dọn refresh token hết hạn/đã revoke.
 
 ---
 
@@ -22,8 +22,8 @@
 | Ngôn ngữ | Java 21 | |
 | Security | `spring-boot-starter-security` | JWT stateless thuần — **không** bật `oauth2Login()` (tránh session/CSRF churn đã gặp ở project 09) |
 | JWT | JJWT `jjwt-api/impl/jackson` 0.13.0 | Đồng bộ version với project 09 |
-| Persistence | `spring-boot-starter-data-jpa` + MySQL | Specification API cho filter động |
-| Cache / Session store | `spring-boot-starter-data-redis` | Refresh token, access-token blacklist, rate limit, session registry |
+| Persistence | `spring-boot-starter-data-jpa` + MySQL | Specification API cho filter động; **refresh token cũng lưu ở đây** (Phase 4) |
+| Cache | `spring-boot-starter-data-redis` | Access-token blacklist (logout), rate limit login — dữ liệu ngắn hạn, chấp nhận mất được (Phase 6) |
 | Validation | `spring-boot-starter-validation` | Bean Validation trên DTO |
 | Docs | `springdoc-openapi-starter-webmvc-ui` | Swagger UI (Phase 8) |
 | Migration | `flyway-mysql` | Thay `ddl-auto: update` (Phase 8) |
@@ -67,16 +67,16 @@ flowchart TB
     end
 
     subgraph Infra["Docker infra"]
-        MySQL[("MySQL 8 :3306<br/>users")]
-        Redis[("Redis 7 :6379<br/>refresh token, blacklist,<br/>session registry, rate limit")]
+        MySQL[("MySQL 8 :3306<br/>users, refresh_tokens")]
+        Redis[("Redis 7 :6379<br/>access-token blacklist,<br/>rate limit")]
     end
 
     Client -->|Bearer token| RL --> Filter --> Sec
     Sec --> AuthMod
     Sec --> UserMod
-    AuthMod -->|refresh/session/blacklist| Redis
+    AuthMod -->|blacklist| Redis
     RL -->|counter| Redis
-    AuthMod -->|user lookup| MySQL
+    AuthMod -->|user lookup, refresh token, session| MySQL
     UserMod --> MySQL
 ```
 
@@ -90,7 +90,7 @@ flowchart TB
 | 1+ | CRUD `user` hoàn chỉnh (list/filter/pagination, xem, tạo, sửa, xoá) — **chưa auth/phân quyền** | user |
 | 2 | Register + login + JWT access token (chưa refresh, chưa Redis) | auth |
 | 3 | Wire `SecurityConfig` + `JwtAuthenticationFilter` toàn app — STATELESS | auth |
-| 4 | Refresh token + Redis + rotation/reuse detection | auth |
+| 4 | Refresh token (MySQL/JPA) + rotation/reuse detection | auth |
 | 5 | Bổ sung `@PreAuthorize` theo role/ownership lên CRUD đã có từ Phase 1+ | user |
 | 6 | Logout/blacklist, rate limit login, multi-device session | auth |
 | 7 | Test (unit/slice/integration) cả 2 module | auth + user |
@@ -747,13 +747,16 @@ Tất cả phải trả `200`/`201` không cần header `Authorization` (vì `Se
 app:
   jwt:
     secret: "ChangeThisToARandomSecretAtLeast32BytesLongForHS256!!"
-    access-token-expiration: 900000       # 15 phút (ms)
-    refresh-token-expiration: 604800000   # 7 ngày (ms) — dùng từ Phase 4
+    access-token-expiration: 900000                # 15 phút (ms)
+    refresh-token-expiration: 604800000             # 7 ngày (ms) — idle TTL, dùng từ Phase 4
+    refresh-token-absolute-expiration: 2592000000   # 30 ngày (ms) — absolute TTL, dùng từ Phase 4 (cập nhật 2026-07-30)
 ```
 
 > `secret` chỉ để chạy dev. Khi lên `application-prod.yml` (Phase 8) phải đọc từ biến môi trường, không hardcode.
 >
 > **Cập nhật 2026-07-29:** `access-token-expiration` thật đang set `300000` (5 phút) thay vì `900000` (15 phút) như ví dụ trên — giá trị ngắn hơn để dễ test luồng hết hạn token bằng tay. Giá trị `secret` thật nằm trong `application.yml` (không duplicate lại ở đây).
+>
+> **Cập nhật 2026-07-30:** thêm `refresh-token-absolute-expiration` — trần cứng cho refresh token, không reset khi rotate (khác `refresh-token-expiration` là idle TTL, reset mỗi lần rotate). Xem Phase 4.
 
 **Step 2.3 — `common/dto/ApiResponse.java`**
 
@@ -1447,80 +1450,176 @@ public class SecurityConfig {
 
 ---
 
-### Phase 4 — Refresh token + Redis + rotation/reuse detection
+### Phase 4 — Refresh token (MySQL/JPA) + rotation/reuse detection
 
 **Mục tiêu:** login trả thêm `refreshToken`; endpoint `/refresh` rotate token, phát hiện reuse.
 
-**Thiết kế Redis key:**
+**Thiết kế bảng `refresh_tokens`** (tạo tự động qua `ddl-auto: update` — Flyway migration chính thức ở Phase 8):
 
-| Key pattern | Value | TTL | Mục đích |
-|---|---|---|---|
-| `auth:refresh:{tokenHash}` | JSON `{userId, sessionId, deviceInfo, ip, issuedAt, revoked}` | = refresh token lifetime | Xác thực + rotate khi gọi `/refresh` |
-| `auth:sessions:{userId}` | SET các `sessionId` đang active | = refresh token lifetime | Liệt kê/thu hồi thiết bị của user (Phase 6) |
+| Column | Type | Ghi chú |
+|---|---|---|
+| `id`, `created_at`, `updated_at`, `version` | từ `BaseEntity` | `created_at` chính là "issued at", không cần field riêng |
+| `user_id` | BIGINT | Chỉ lưu id thô, **không** dùng `@ManyToOne` — tránh lazy-loading không cần thiết, load `User` lại qua `UserRepository` khi thật sự cần (giống cách `AuthService` đã làm) |
+| `session_id` | VARCHAR(36) | UUID, khớp với claim `sid` trong access token (Step 4.8). Cũng chính là "family" của chuỗi rotation — 1 login = 1 `session_id` = nhiều token nối tiếp nhau qua rotate, không cần thêm cột `family_id` riêng vì 2 khái niệm này trùng nhau 1-1 trong thiết kế này |
+| `token_hash` | VARCHAR(64) UNIQUE | SHA-256 hex của raw token — **không bao giờ lưu raw token**, kể cả trong DB (nếu DB bị đọc trộm, kẻ tấn công vẫn không dùng được) |
+| `device_info`, `ip` | VARCHAR | |
+| `expires_at` | DATETIME | Idle TTL — **reset mỗi lần rotate** |
+| `absolute_expires_at` | DATETIME | Absolute TTL — cố định từ lần login đầu tiên, **không bao giờ reset** khi rotate. Ép user phải đăng nhập lại (nhập mật khẩu thật) sau N ngày dù active liên tục — giới hạn "blast radius" nếu 1 token bị đánh cắp mà chưa bị phát hiện reuse |
+| `revoked`, `revoked_at` | BOOLEAN, DATETIME NULL | |
+| `revoked_reason` | VARCHAR(30) NULL | `LOGOUT` / `REUSE_DETECTED` / `ROTATED` — phục vụ security audit (vd: cảnh báo khi `REUSE_DETECTED` tăng đột biến) |
 
-**Rotation + reuse detection:** token cũ khi bị rotate KHÔNG bị xoá ngay — được đánh dấu `revoked=true` và giữ lại **grace window 30 giây**. Nếu trong 30 giây đó có ai dùng lại chính token này → chắc chắn là request replay/token bị đánh cắp (client hợp lệ đã nhận token mới rồi, không có lý do gì dùng lại token cũ) → thu hồi toàn bộ session của user.
+**Rotation + reuse detection:** khác với bản Redis (phải đánh dấu `revoked` rồi giữ **grace window 30 giây** vì thao tác đọc-rồi-ghi trên Redis không atomic), bản DB dùng **`SELECT ... FOR UPDATE`** (`@Lock(PESSIMISTIC_WRITE)`) để khoá đúng row đang rotate trong 1 transaction — 2 request `/refresh` dùng chung 1 token sẽ tự xếp hàng, không còn race condition, và **không cần grace window nữa**: request thắng cuộc sẽ revoke + phát token mới; request thua cuộc (dù đến sau 1ms hay 1 ngày) luôn thấy `revoked=true` và bị coi là reuse ngay lập tức.
 
-**Step 4.1 — Thêm dependency Redis vào `pom.xml`**
+> **Không có cột `family_id` hay `replaced_by_token_id`:** `session_id` đã đóng đúng vai trò "family" (không có kịch bản nào trong project này khiến 2 khái niệm lệch nhau). Muốn xem chuỗi rotation của 1 session, chỉ cần `WHERE session_id = ? ORDER BY created_at ASC` — thứ tự đã có sẵn từ `created_at` kế thừa `BaseEntity`, không cần thêm FK tự tham chiếu (mà FK đó còn tốn thêm 1 lượt `UPDATE` mỗi lần rotate chỉ để lưu lại thứ suy ra được miễn phí).
 
-```xml
-<dependency>
-    <groupId>org.springframework.boot</groupId>
-    <artifactId>spring-boot-starter-data-redis</artifactId>
-</dependency>
-```
-
-**Step 4.2 — Thêm cấu hình Redis vào `application.yml`**
-
-```yaml
-spring:
-  data:
-    redis:
-      host: ${REDIS_HOST:localhost}
-      port: 6379
-```
-
-**Step 4.3 — `config/RedisConfig.java`**
+**Step 4.1 — `module/auth/entity/RefreshToken.java`**
 
 ```java
-package com.maaitlunghau.__spring_boot_blueprint.config;
+package com.maaitlunghau.__spring_boot_blueprint.module.auth.entity;
 
-import org.springframework.context.annotation.Bean;
-import org.springframework.context.annotation.Configuration;
-import org.springframework.data.redis.connection.RedisConnectionFactory;
-import org.springframework.data.redis.core.StringRedisTemplate;
+import java.time.LocalDateTime;
 
-/**
- * Spring Boot đã tự auto-config StringRedisTemplate khi có starter-data-redis trên
- * classpath — khai báo tường minh ở đây để dễ tuỳ biến serializer sau này nếu cần.
- */
-@Configuration
-public class RedisConfig {
+import com.maaitlunghau.__spring_boot_blueprint.common.entity.BaseEntity;
 
-    @Bean
-    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory connectionFactory) {
-        return new StringRedisTemplate(connectionFactory);
+import jakarta.persistence.Column;
+import jakarta.persistence.Entity;
+import jakarta.persistence.EnumType;
+import jakarta.persistence.Enumerated;
+import jakarta.persistence.Index;
+import jakarta.persistence.Table;
+import lombok.Getter;
+
+@Entity
+@Table(name = "refresh_tokens", indexes = {
+    @Index(name = "idx_refresh_tokens_token_hash", columnList = "token_hash", unique = true),
+    @Index(name = "idx_refresh_tokens_user_session", columnList = "user_id, session_id"),
+    @Index(name = "idx_refresh_tokens_revoked_revoked_at", columnList = "revoked, revoked_at")
+})
+@Getter
+public class RefreshToken extends BaseEntity {
+
+    @Column(nullable = false, name = "user_id")
+    private Long userId;
+
+    @Column(nullable = false, name = "session_id", length = 36)
+    private String sessionId;
+
+    @Column(nullable = false, name = "token_hash", unique = true, length = 64)
+    private String tokenHash;
+
+    @Column(name = "device_info")
+    private String deviceInfo;
+
+    @Column(length = 45)
+    private String ip;
+
+    /** Idle TTL — reset mỗi lần rotate. */
+    @Column(nullable = false, name = "expires_at")
+    private LocalDateTime expiresAt;
+
+    /** Absolute TTL — cố định từ lần login đầu, KHÔNG reset khi rotate. */
+    @Column(nullable = false, name = "absolute_expires_at")
+    private LocalDateTime absoluteExpiresAt;
+
+    @Column(nullable = false)
+    private boolean revoked = false;
+
+    @Column(name = "revoked_at")
+    private LocalDateTime revokedAt;
+
+    @Column(name = "revoked_reason", length = 30)
+    @Enumerated(EnumType.STRING)
+    private RevokeReason revokedReason;
+
+    protected RefreshToken() {
+    }
+
+    public RefreshToken(Long userId, String sessionId, String tokenHash, String deviceInfo, String ip,
+                         LocalDateTime expiresAt, LocalDateTime absoluteExpiresAt) {
+        this.userId = userId;
+        this.sessionId = sessionId;
+        this.tokenHash = tokenHash;
+        this.deviceInfo = deviceInfo;
+        this.ip = ip;
+        this.expiresAt = expiresAt;
+        this.absoluteExpiresAt = absoluteExpiresAt;
+    }
+
+    public void revoke(RevokeReason reason) {
+        this.revoked = true;
+        this.revokedAt = LocalDateTime.now();
+        this.revokedReason = reason;
+    }
+
+    public boolean isExpired() {
+        LocalDateTime now = LocalDateTime.now();
+        return expiresAt.isBefore(now) || absoluteExpiresAt.isBefore(now);
+    }
+
+    /**
+     * Chỉ 3 giá trị thật sự có nơi gọi trong roadmap này — không thêm PASSWORD_CHANGED/
+     * ADMIN_REVOKED/SUSPICIOUS_ACTIVITY vì chưa có tính năng đổi mật khẩu/admin panel/
+     * anomaly detection nào trong project 10 để sinh ra các lý do đó. Thêm khi tính năng
+     * tương ứng thật sự tồn tại.
+     */
+    public enum RevokeReason {
+        LOGOUT,
+        REUSE_DETECTED,
+        ROTATED
     }
 }
 ```
 
-**Step 4.4 — `module/auth/service/RefreshTokenPayload.java`**
+**Step 4.2 — `module/auth/repository/RefreshTokenRepository.java`**
 
 ```java
-package com.maaitlunghau.__spring_boot_blueprint.module.auth.service;
+package com.maaitlunghau.__spring_boot_blueprint.module.auth.repository;
 
-import java.time.Instant;
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.Optional;
 
-public record RefreshTokenPayload(
-    Long userId,
-    String sessionId,
-    String deviceInfo,
-    String ip,
-    Instant issuedAt,
-    boolean revoked
-) {}
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Lock;
+import org.springframework.data.jpa.repository.Modifying;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RefreshToken;
+
+import jakarta.persistence.LockModeType;
+
+public interface RefreshTokenRepository extends JpaRepository<RefreshToken, Long> {
+
+    /**
+     * PESSIMISTIC_WRITE khoá row lại tới khi transaction kết thúc — đây là điểm khác
+     * biệt cốt lõi so với bản Redis: chuỗi đọc-rồi-ghi ở đây atomic thật, không cần
+     * grace window để né race condition nữa.
+     */
+    @Lock(LockModeType.PESSIMISTIC_WRITE)
+    @Query("SELECT rt FROM RefreshToken rt WHERE rt.tokenHash = :tokenHash")
+    Optional<RefreshToken> findByTokenHashForUpdate(@Param("tokenHash") String tokenHash);
+
+    List<RefreshToken> findByUserIdAndRevokedFalseOrderByCreatedAtDesc(Long userId);
+
+    Optional<RefreshToken> findByUserIdAndSessionIdAndRevokedFalse(Long userId, String sessionId);
+
+    /**
+     * 2 nhóm cần dọn, dùng chung 1 query để job cleanup chỉ cần gọi 1 lần:
+     * (1) token chưa từng bị revoke nhưng đã qua idle TTL tự nhiên (session bị bỏ quên),
+     * (2) token đã revoke — giữ lại {@code revokedRetentionCutoff} (vd 30 ngày) trước khi
+     *     xoá, để còn thời gian audit các event `REUSE_DETECTED` trước khi mất dữ liệu.
+     * `idx_refresh_tokens_revoked_revoked_at` phục vụ đúng nhánh (2) của query này.
+     */
+    @Modifying
+    @Query("DELETE FROM RefreshToken rt WHERE rt.expiresAt < :now "
+        + "OR (rt.revoked = true AND rt.revokedAt < :revokedRetentionCutoff)")
+    void purgeExpiredOrLongRevoked(@Param("now") LocalDateTime now,
+                                    @Param("revokedRetentionCutoff") LocalDateTime revokedRetentionCutoff);
+}
 ```
 
-**Step 4.5 — `module/auth/service/RefreshTokenService.java`**
+**Step 4.3 — `module/auth/service/RefreshTokenService.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.service;
@@ -1530,45 +1629,46 @@ import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
 import java.security.SecureRandom;
 import java.time.Duration;
-import java.time.Instant;
+import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.HexFormat;
-import java.util.Set;
+import java.util.List;
 
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.data.redis.core.StringRedisTemplate;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
 
-import com.fasterxml.jackson.core.JsonProcessingException;
-import com.fasterxml.jackson.databind.ObjectMapper;
 import com.maaitlunghau.__spring_boot_blueprint.exception.InvalidRefreshTokenException;
 import com.maaitlunghau.__spring_boot_blueprint.exception.RefreshTokenReuseException;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RefreshToken;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RefreshToken.RevokeReason;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.repository.RefreshTokenRepository;
 
 @Service
+@Transactional(readOnly = true)
 public class RefreshTokenService {
 
-    private static final String REFRESH_PREFIX = "auth:refresh:";
-    private static final String SESSION_SET_PREFIX = "auth:sessions:";
-    private static final Duration REUSE_GRACE_WINDOW = Duration.ofSeconds(30);
-
-    private final StringRedisTemplate redisTemplate;
-    private final ObjectMapper objectMapper;
+    private final RefreshTokenRepository refreshTokenRepository;
     private final long refreshTokenExpirationMs;
+    private final long refreshTokenAbsoluteExpirationMs;
 
-    public RefreshTokenService(StringRedisTemplate redisTemplate,
-                                ObjectMapper objectMapper,
-                                @Value("${app.jwt.refresh-token-expiration}") long refreshTokenExpirationMs) {
-        this.redisTemplate = redisTemplate;
-        this.objectMapper = objectMapper;
+    public RefreshTokenService(RefreshTokenRepository refreshTokenRepository,
+                                @Value("${app.jwt.refresh-token-expiration}") long refreshTokenExpirationMs,
+                                @Value("${app.jwt.refresh-token-absolute-expiration}") long refreshTokenAbsoluteExpirationMs) {
+        this.refreshTokenRepository = refreshTokenRepository;
         this.refreshTokenExpirationMs = refreshTokenExpirationMs;
+        this.refreshTokenAbsoluteExpirationMs = refreshTokenAbsoluteExpirationMs;
     }
 
     /** Phát refresh token MỚI cho 1 session mới (login). Trả raw token cho client. */
+    @Transactional
     public String issue(Long userId, String sessionId, String deviceInfo, String ip) {
         String rawToken = generateOpaqueToken();
-        saveToken(rawToken, new RefreshTokenPayload(userId, sessionId, deviceInfo, ip, Instant.now(), false));
-        redisTemplate.opsForSet().add(SESSION_SET_PREFIX + userId, sessionId);
-        redisTemplate.expire(SESSION_SET_PREFIX + userId, Duration.ofMillis(refreshTokenExpirationMs));
+        LocalDateTime now = LocalDateTime.now();
+        LocalDateTime expiresAt = now.plus(Duration.ofMillis(refreshTokenExpirationMs));
+        LocalDateTime absoluteExpiresAt = now.plus(Duration.ofMillis(refreshTokenAbsoluteExpirationMs));
+        refreshTokenRepository.save(
+            new RefreshToken(userId, sessionId, hash(rawToken), deviceInfo, ip, expiresAt, absoluteExpiresAt));
         return rawToken;
     }
 
@@ -1576,68 +1676,56 @@ public class RefreshTokenService {
      * Rotate: verify raw token, phát token mới cùng session, đánh dấu token cũ revoked.
      * Ném RefreshTokenReuseException nếu token đã revoked trước đó bị dùng lại (theft).
      */
+    @Transactional
     public RotationResult rotate(String rawOldToken, String deviceInfo, String ip) {
         String oldHash = hash(rawOldToken);
-        RefreshTokenPayload payload = readToken(oldHash);
+        RefreshToken token = refreshTokenRepository.findByTokenHashForUpdate(oldHash)
+            .orElseThrow(() -> new InvalidRefreshTokenException("Refresh token không hợp lệ hoặc đã hết hạn"));
 
-        if (payload == null) {
-            throw new InvalidRefreshTokenException("Refresh token không hợp lệ hoặc đã hết hạn");
+        if (token.isExpired()) {
+            throw new InvalidRefreshTokenException("Refresh token đã hết hạn");
         }
-        if (payload.revoked()) {
-            revokeAllSessions(payload.userId());
+        if (token.isRevoked()) {
+            revokeAllSessions(token.getUserId(), RevokeReason.REUSE_DETECTED);
             throw new RefreshTokenReuseException(
                 "Phát hiện refresh token bị dùng lại. Đã đăng xuất toàn bộ thiết bị.");
         }
 
-        redisTemplate.opsForValue().set(REFRESH_PREFIX + oldHash,
-            writeJson(new RefreshTokenPayload(payload.userId(), payload.sessionId(),
-                payload.deviceInfo(), payload.ip(), payload.issuedAt(), true)),
-            REUSE_GRACE_WINDOW);
+        token.revoke(RevokeReason.ROTATED); // không cần gọi save() — dirty checking trong @Transactional lo việc này
 
         String newRawToken = generateOpaqueToken();
-        saveToken(newRawToken, new RefreshTokenPayload(
-            payload.userId(), payload.sessionId(), deviceInfo, ip, Instant.now(), false));
+        LocalDateTime expiresAt = LocalDateTime.now().plus(Duration.ofMillis(refreshTokenExpirationMs));
+        // absoluteExpiresAt KHÔNG được tính lại — copy nguyên từ token cũ, nếu không sẽ
+        // reset y như idle TTL và làm vô nghĩa toàn bộ mục đích của absolute expiration.
+        refreshTokenRepository.save(new RefreshToken(
+            token.getUserId(), token.getSessionId(), hash(newRawToken), deviceInfo, ip,
+            expiresAt, token.getAbsoluteExpiresAt()));
 
-        return new RotationResult(newRawToken, payload.userId(), payload.sessionId());
+        return new RotationResult(newRawToken, token.getUserId(), token.getSessionId());
     }
 
-    /** Thu hồi 1 session cụ thể (logout hoặc revoke chủ động từ danh sách thiết bị). */
-    public void revokeSession(Long userId, String sessionId) {
-        redisTemplate.opsForSet().remove(SESSION_SET_PREFIX + userId, sessionId);
+    /**
+     * Thu hồi 1 session cụ thể (logout hoặc revoke chủ động từ danh sách thiết bị).
+     * Khác bản Redis cũ (chỉ xoá sessionId khỏi 1 SET hiển thị, KHÔNG thật sự vô hiệu
+     * hoá refresh token bên dưới) — bản này revoke đúng row nên `/refresh` bằng token
+     * của session đã bị thu hồi sẽ thật sự thất bại ngay từ lần gọi tiếp theo.
+     */
+    @Transactional
+    public void revokeSession(Long userId, String sessionId, RevokeReason reason) {
+        refreshTokenRepository.findByUserIdAndSessionIdAndRevokedFalse(userId, sessionId)
+            .ifPresent(t -> t.revoke(reason));
     }
 
-    /** Thu hồi TOÀN BỘ session — dùng khi phát hiện reuse hoặc user chọn "đăng xuất mọi thiết bị". */
-    public void revokeAllSessions(Long userId) {
-        redisTemplate.delete(SESSION_SET_PREFIX + userId);
+    /** Thu hồi TOÀN BỘ session — hiện chỉ gọi khi phát hiện reuse (Phase 4/6 chưa có tính năng "đăng xuất mọi thiết bị" cho user tự bấm, nhận `reason` để mở rộng sau mà không cần đổi chữ ký method). */
+    @Transactional
+    public void revokeAllSessions(Long userId, RevokeReason reason) {
+        refreshTokenRepository.findByUserIdAndRevokedFalseOrderByCreatedAtDesc(userId)
+            .forEach(t -> t.revoke(reason));
     }
 
-    public Set<String> listSessionIds(Long userId) {
-        return redisTemplate.opsForSet().members(SESSION_SET_PREFIX + userId);
-    }
-
-    // ===== internal =====
-
-    private void saveToken(String rawToken, RefreshTokenPayload payload) {
-        redisTemplate.opsForValue().set(REFRESH_PREFIX + hash(rawToken), writeJson(payload),
-            Duration.ofMillis(refreshTokenExpirationMs));
-    }
-
-    private RefreshTokenPayload readToken(String tokenHash) {
-        String json = redisTemplate.opsForValue().get(REFRESH_PREFIX + tokenHash);
-        if (json == null) return null;
-        try {
-            return objectMapper.readValue(json, RefreshTokenPayload.class);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Không đọc được refresh token payload", e);
-        }
-    }
-
-    private String writeJson(RefreshTokenPayload payload) {
-        try {
-            return objectMapper.writeValueAsString(payload);
-        } catch (JsonProcessingException e) {
-            throw new IllegalStateException("Không serialize được refresh token payload", e);
-        }
+    /** Danh sách session đang active — Phase 6 dùng cho `GET /api/v1/auth/sessions`. */
+    public List<RefreshToken> listActiveSessions(Long userId) {
+        return refreshTokenRepository.findByUserIdAndRevokedFalseOrderByCreatedAtDesc(userId);
     }
 
     private String generateOpaqueToken() {
@@ -1659,9 +1747,42 @@ public class RefreshTokenService {
 }
 ```
 
-> **Giới hạn cần biết:** `readToken` + `set(...revoked=true...)` không atomic — 2 request `/refresh` cùng lúc dùng chung 1 token vẫn có khe hở race condition lý thuyết. Muốn triệt để 100% cần gói cả 2 bước vào 1 Lua script chạy qua `redisTemplate.execute(RedisScript...)`. Ghi nhận làm nâng cao, không bắt buộc cho bản đầu.
+**Step 4.4 — Cập nhật `scheduler/CleanupScheduledTask.java`** — DB không tự hết hạn dữ liệu như Redis TTL, cần job dọn định kỳ để bảng `refresh_tokens` không phình vô hạn
 
-**Step 4.6 — `exception/InvalidRefreshTokenException.java`**
+```java
+package com.maaitlunghau.__spring_boot_blueprint.scheduler;
+
+import java.time.LocalDateTime;
+
+import org.springframework.scheduling.annotation.Scheduled;
+import org.springframework.stereotype.Component;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.repository.RefreshTokenRepository;
+
+@Component
+public class CleanupScheduledTask {
+
+    private final RefreshTokenRepository refreshTokenRepository;
+
+    public CleanupScheduledTask(RefreshTokenRepository refreshTokenRepository) {
+        this.refreshTokenRepository = refreshTokenRepository;
+    }
+
+    // Giữ token đã revoke thêm 30 ngày trước khi xoá — đủ thời gian audit các event
+    // REUSE_DETECTED trước khi mất dữ liệu.
+    private static final long REVOKED_RETENTION_DAYS = 30;
+
+    @Scheduled(cron = "0 0 3 * * *") // 3h sáng mỗi ngày
+    public void purgeExpiredRefreshTokens() {
+        LocalDateTime now = LocalDateTime.now();
+        refreshTokenRepository.purgeExpiredOrLongRevoked(now, now.minusDays(REVOKED_RETENTION_DAYS));
+    }
+}
+```
+
+> **Nhớ thêm `@EnableScheduling`** lên `Application.java` (hoặc 1 `@Configuration` bất kỳ) — thiếu annotation này thì `@Scheduled` sẽ **không bao giờ chạy**, không có lỗi/warning gì báo cho biết.
+
+**Step 4.5 — `exception/InvalidRefreshTokenException.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.exception;
@@ -1685,7 +1806,7 @@ public class RefreshTokenReuseException extends AppException {
 }
 ```
 
-**Step 4.7 — Cập nhật `exception/GlobalExceptionHandler.java`** — thêm 2 handler (chèn vào trước `handleGeneral`)
+**Step 4.6 — Cập nhật `exception/GlobalExceptionHandler.java`** — thêm 2 handler (chèn vào trước `handleGeneral`)
 
 ```java
     @ExceptionHandler(InvalidRefreshTokenException.class)
@@ -1699,7 +1820,7 @@ public class RefreshTokenReuseException extends AppException {
     }
 ```
 
-**Step 4.8 — `util/RequestUtils.java`**
+**Step 4.7 — `util/RequestUtils.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.util;
@@ -1725,7 +1846,7 @@ public final class RequestUtils {
 }
 ```
 
-**Step 4.9 — Cập nhật lại toàn bộ `security/JwtService.java`** — thêm claim `sid` (sessionId) để `logout`/session-management (Phase 6) tự biết session nào mà không cần client gửi thêm gì
+**Step 4.8 — Cập nhật lại toàn bộ `security/JwtService.java`** — thêm claim `sid` (sessionId) để `logout`/session-management (Phase 6) tự biết session nào mà không cần client gửi thêm gì
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.security;
@@ -1808,7 +1929,7 @@ public class JwtService {
 }
 ```
 
-**Step 4.10 — Cập nhật lại toàn bộ `module/auth/dto/response/AuthResponse.java`**
+**Step 4.9 — Cập nhật lại toàn bộ `module/auth/dto/response/AuthResponse.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response;
@@ -1816,7 +1937,7 @@ package com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response;
 public record AuthResponse(String accessToken, String refreshToken, long expiresIn) {}
 ```
 
-**Step 4.11 — `module/auth/dto/request/RefreshRequest.java`**
+**Step 4.10 — `module/auth/dto/request/RefreshRequest.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request;
@@ -1826,7 +1947,7 @@ import jakarta.validation.constraints.NotBlank;
 public record RefreshRequest(@NotBlank(message = "refreshToken là bắt buộc") String refreshToken) {}
 ```
 
-**Step 4.12 — Cập nhật lại toàn bộ `module/auth/service/AuthService.java`**
+**Step 4.11 — Cập nhật lại toàn bộ `module/auth/service/AuthService.java`** — không đổi logic so với bản Redis, vì `RefreshTokenService` vẫn giữ nguyên chữ ký public method (`issue`/`rotate`)
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.service;
@@ -1908,7 +2029,7 @@ public class AuthService {
 }
 ```
 
-**Step 4.13 — Cập nhật lại toàn bộ `module/auth/controller/v1/AuthController.java`**
+**Step 4.12 — Cập nhật lại toàn bộ `module/auth/controller/v1/AuthController.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.controller.v1;
@@ -1965,7 +2086,7 @@ public class AuthController {
 }
 ```
 
-**Verify Phase 4:** login → lấy `refreshToken` → gọi `/refresh` lần 1 (thành công, nhận token mới) → gọi `/refresh` lần 2 **với token cũ đã dùng** trong vòng 30s → phải nhận lỗi `RefreshTokenReuseException` (401) và các session khác (nếu có) cũng bị revoke.
+**Verify Phase 4:** login → lấy `refreshToken` → gọi `/refresh` lần 1 (thành công, nhận token mới; kiểm tra bảng `refresh_tokens` thấy row cũ `revoked=true`, row mới `revoked=false`) → gọi `/refresh` lần 2 **với token cũ đã dùng** (bất kỳ lúc nào sau đó, không còn giới hạn khung giờ như bản Redis) → phải nhận lỗi `RefreshTokenReuseException` (401) và toàn bộ session của user bị revoke.
 
 ---
 
@@ -2078,7 +2199,52 @@ public class UserController {
 
 **Mục tiêu:** hoàn thiện vòng đời token — logout thật sự vô hiệu hoá access token đang dùng, chống brute-force, quản lý thiết bị.
 
-**Step 6.1 — `module/auth/service/TokenBlacklistService.java`**
+> **Redis lần đầu xuất hiện ở đây, không phải Phase 4:** access-token blacklist và rate-limit counter là dữ liệu ngắn hạn, chấp nhận mất được — đúng chỗ Redis mạnh nhất (xem lại quyết định lưu trữ ở Mục 1). Refresh token (Phase 4) đã dùng MySQL nên không cần Redis từ trước.
+
+**Step 6.1 — Thêm dependency Redis vào `pom.xml`**
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-data-redis</artifactId>
+</dependency>
+```
+
+**Thêm cấu hình Redis vào `application.yml`**
+
+```yaml
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:localhost}
+      port: 6379
+```
+
+**`config/RedisConfig.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.config;
+
+import org.springframework.context.annotation.Bean;
+import org.springframework.context.annotation.Configuration;
+import org.springframework.data.redis.connection.RedisConnectionFactory;
+import org.springframework.data.redis.core.StringRedisTemplate;
+
+/**
+ * Spring Boot đã tự auto-config StringRedisTemplate khi có starter-data-redis trên
+ * classpath — khai báo tường minh ở đây để dễ tuỳ biến serializer sau này nếu cần.
+ */
+@Configuration
+public class RedisConfig {
+
+    @Bean
+    public StringRedisTemplate stringRedisTemplate(RedisConnectionFactory connectionFactory) {
+        return new StringRedisTemplate(connectionFactory);
+    }
+}
+```
+
+**Step 6.2 — `module/auth/service/TokenBlacklistService.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.service;
@@ -2110,7 +2276,7 @@ public class TokenBlacklistService {
 }
 ```
 
-**Step 6.2 — Cập nhật lại toàn bộ `security/JwtAuthenticationFilter.java`** — check blacklist trước khi set context
+**Step 6.3 — Cập nhật lại toàn bộ `security/JwtAuthenticationFilter.java`** — check blacklist trước khi set context
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.security;
@@ -2188,7 +2354,7 @@ public class JwtAuthenticationFilter extends OncePerRequestFilter {
 }
 ```
 
-**Step 6.3 — Cập nhật lại toàn bộ `module/auth/service/AuthService.java`** — thêm `logout()`
+**Step 6.4 — Cập nhật lại toàn bộ `module/auth/service/AuthService.java`** — thêm `logout()`
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.service;
@@ -2206,6 +2372,7 @@ import com.maaitlunghau.__spring_boot_blueprint.exception.ResourceNotFoundExcept
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.LoginRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.request.RegisterRequest;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response.AuthResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RefreshToken.RevokeReason;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.RefreshTokenService.RotationResult;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.Role;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
@@ -2282,12 +2449,12 @@ public class AuthService {
 
         User user = userRepository.findByEmail(username)
             .orElseThrow(() -> new ResourceNotFoundException("User", username));
-        refreshTokenService.revokeSession(user.getId(), sessionId);
+        refreshTokenService.revokeSession(user.getId(), sessionId, RevokeReason.LOGOUT);
     }
 }
 ```
 
-**Step 6.4 — Cập nhật lại toàn bộ `module/auth/controller/v1/AuthController.java`** — thêm `/logout`
+**Step 6.5 — Cập nhật lại toàn bộ `module/auth/controller/v1/AuthController.java`** — thêm `/logout`
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.controller.v1;
@@ -2352,12 +2519,30 @@ public class AuthController {
 }
 ```
 
-**Step 6.5 — `module/auth/controller/v1/SessionController.java`** (liệt kê/thu hồi thiết bị)
+**Step 6.6 — `module/auth/controller/v1/SessionController.java`** (liệt kê/thu hồi thiết bị)
+
+> **Nâng cấp so với bản Redis:** trước đây chỉ có `Set<String>` sessionId (không biết thiết bị nào, IP nào, đăng nhập lúc nào) vì Redis SET chỉ lưu được ID thô. Giờ có bảng `refresh_tokens` thật, `listActiveSessions` trả về cả entity — đủ dữ liệu để hiển thị "đang đăng nhập trên: Chrome/Windows, IP 1.2.3.4, từ 10:30 hôm nay" mà không cần thêm chỗ lưu nào khác.
+
+**`module/auth/dto/response/SessionResponse.java`**
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response;
+
+import java.time.LocalDateTime;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RefreshToken;
+
+public record SessionResponse(String sessionId, String deviceInfo, String ip, LocalDateTime createdAt) {
+    public static SessionResponse from(RefreshToken token) {
+        return new SessionResponse(token.getSessionId(), token.getDeviceInfo(), token.getIp(), token.getCreatedAt());
+    }
+}
+```
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.module.auth.controller.v1;
 
-import java.util.Set;
+import java.util.List;
 
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.annotation.AuthenticationPrincipal;
@@ -2368,6 +2553,8 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import com.maaitlunghau.__spring_boot_blueprint.common.dto.ApiResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.dto.response.SessionResponse;
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RefreshToken.RevokeReason;
 import com.maaitlunghau.__spring_boot_blueprint.module.auth.service.RefreshTokenService;
 import com.maaitlunghau.__spring_boot_blueprint.module.user.entity.User;
 
@@ -2382,20 +2569,23 @@ public class SessionController {
     }
 
     @GetMapping
-    public ResponseEntity<ApiResponse<Set<String>>> list(@AuthenticationPrincipal User user) {
-        return ResponseEntity.ok(ApiResponse.ok(refreshTokenService.listSessionIds(user.getId())));
+    public ResponseEntity<ApiResponse<List<SessionResponse>>> list(@AuthenticationPrincipal User user) {
+        List<SessionResponse> sessions = refreshTokenService.listActiveSessions(user.getId()).stream()
+            .map(SessionResponse::from)
+            .toList();
+        return ResponseEntity.ok(ApiResponse.ok(sessions));
     }
 
     @DeleteMapping("/{sessionId}")
     public ResponseEntity<ApiResponse<Void>> revoke(@AuthenticationPrincipal User user,
                                                       @PathVariable String sessionId) {
-        refreshTokenService.revokeSession(user.getId(), sessionId);
+        refreshTokenService.revokeSession(user.getId(), sessionId, RevokeReason.LOGOUT);
         return ResponseEntity.ok(ApiResponse.message(200, "Đã thu hồi phiên đăng nhập"));
     }
 }
 ```
 
-**Step 6.6 — `filter/RateLimitFilter.java`**
+**Step 6.7 — `filter/RateLimitFilter.java`**
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.filter;
@@ -2458,7 +2648,7 @@ public class RateLimitFilter extends OncePerRequestFilter {
 }
 ```
 
-**Step 6.7 — Cập nhật lại toàn bộ `config/SecurityConfig.java`** — wire `RateLimitFilter` trước `JwtAuthenticationFilter`
+**Step 6.8 — Cập nhật lại toàn bộ `config/SecurityConfig.java`** — wire `RateLimitFilter` trước `JwtAuthenticationFilter`
 
 ```java
 package com.maaitlunghau.__spring_boot_blueprint.config;
@@ -2535,7 +2725,7 @@ public class SecurityConfig {
 }
 ```
 
-> Lưu ý endpoint `/api/v1/auth/sessions/**` (Step 6.5) đang KHÔNG nằm trong `permitAll` (chỉ `/api/v1/auth/**` được permit toàn bộ) — thực tế path này match `/api/v1/auth/**` nên vẫn permitAll! Cần sửa lại rule để `/api/v1/auth/sessions/**` yêu cầu authenticated trong khi `/api/v1/auth/{register,login,refresh}` thì permitAll. Cách làm: liệt kê rõ từng path thay vì dùng wildcard `/api/v1/auth/**` — xem lại `authorizeHttpRequests` ở trên và tự sửa thành:
+> Lưu ý endpoint `/api/v1/auth/sessions/**` (Step 6.6) đang KHÔNG nằm trong `permitAll` (chỉ `/api/v1/auth/**` được permit toàn bộ) — thực tế path này match `/api/v1/auth/**` nên vẫn permitAll! Cần sửa lại rule để `/api/v1/auth/sessions/**` yêu cầu authenticated trong khi `/api/v1/auth/{register,login,refresh}` thì permitAll. Cách làm: liệt kê rõ từng path thay vì dùng wildcard `/api/v1/auth/**` — xem lại `authorizeHttpRequests` ở trên và tự sửa thành:
 > ```java
 > .requestMatchers("/api/v1/auth/register", "/api/v1/auth/login", "/api/v1/auth/refresh").permitAll()
 > .requestMatchers("/swagger-ui/**", "/v3/api-docs/**").permitAll()
@@ -2704,7 +2894,51 @@ class UserRepositoryTest {
 
 > Mặc định `@DataJpaTest` thay DB thật bằng H2 in-memory (khác dialect MySQL). Chạy được ngay không cần setup gì, nhưng muốn test đúng dialect MySQL thật thì cần cấu hình Testcontainers ở Phase 8 và thêm `@AutoConfigureTestDatabase(replace = Replace.NONE)`.
 
-**Verify Phase 7:** `./mvnw test` — cả 3 test trên phải pass. Viết thêm `UserServiceTest`, `UserControllerTest` theo đúng 2 pattern unit/slice ở trên.
+**Step 7.4 — Repository test (`@DataJpaTest`): `module/auth/repository/RefreshTokenRepositoryTest.java`** — bắt buộc thêm vì `RefreshToken` giờ là JPA entity thật (không có ở bản Redis)
+
+```java
+package com.maaitlunghau.__spring_boot_blueprint.module.auth.repository;
+
+import static org.assertj.core.api.Assertions.assertThat;
+
+import java.time.LocalDateTime;
+
+import org.junit.jupiter.api.Test;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.test.autoconfigure.orm.jpa.DataJpaTest;
+
+import com.maaitlunghau.__spring_boot_blueprint.module.auth.entity.RefreshToken;
+
+@DataJpaTest
+class RefreshTokenRepositoryTest {
+
+    @Autowired RefreshTokenRepository refreshTokenRepository;
+
+    @Test
+    void should_find_token_by_hash_for_update() {
+        refreshTokenRepository.save(new RefreshToken(1L, "session-1", "hash-abc", "chrome", "127.0.0.1",
+            LocalDateTime.now().plusDays(7), LocalDateTime.now().plusDays(30)));
+
+        var found = refreshTokenRepository.findByTokenHashForUpdate("hash-abc");
+
+        assertThat(found).isPresent();
+        assertThat(found.get().getSessionId()).isEqualTo("session-1");
+    }
+
+    @Test
+    void should_purge_expired_or_long_revoked_tokens() {
+        refreshTokenRepository.save(new RefreshToken(1L, "session-2", "hash-expired", "chrome", "127.0.0.1",
+            LocalDateTime.now().minusDays(1), LocalDateTime.now().plusDays(29)));
+
+        LocalDateTime now = LocalDateTime.now();
+        refreshTokenRepository.purgeExpiredOrLongRevoked(now, now.minusDays(30));
+
+        assertThat(refreshTokenRepository.findByTokenHashForUpdate("hash-expired")).isEmpty();
+    }
+}
+```
+
+**Verify Phase 7:** `./mvnw test` — cả 4 test trên phải pass. Viết thêm `UserServiceTest`, `UserControllerTest` theo đúng 2 pattern unit/slice ở trên, và `RefreshTokenServiceTest` (mock `RefreshTokenRepository`, verify rotate() phát token mới + verify reuse ném đúng `RefreshTokenReuseException` khi token đã `revoked`).
 
 ---
 
@@ -2755,6 +2989,29 @@ CREATE TABLE users (
 
 CREATE INDEX idx_users_email ON users (email);
 ```
+
+**`src/main/resources/db/migration/V2__create_refresh_tokens_table.sql`** — bảng mới do Phase 4 chuyển refresh token từ Redis sang MySQL
+
+```sql
+CREATE TABLE refresh_tokens (
+    id BIGINT AUTO_INCREMENT PRIMARY KEY,
+    user_id BIGINT NOT NULL,
+    session_id VARCHAR(36) NOT NULL,
+    token_hash VARCHAR(64) NOT NULL UNIQUE,
+    device_info VARCHAR(255),
+    ip VARCHAR(45),
+    expires_at DATETIME NOT NULL,
+    revoked BOOLEAN NOT NULL DEFAULT FALSE,
+    revoked_at DATETIME,
+    created_at DATETIME NOT NULL,
+    updated_at DATETIME NOT NULL,
+    version BIGINT NOT NULL DEFAULT 0
+);
+
+CREATE INDEX idx_refresh_tokens_user_id ON refresh_tokens (user_id);
+```
+
+> `token_hash` đã có `UNIQUE` nên tự động có index — không cần thêm `CREATE INDEX` riêng cho cột này.
 
 **Step 8.3 — Cập nhật `application.yml`** — chuyển `ddl-auto` sang `validate`, bật Flyway
 
@@ -2912,10 +3169,15 @@ jobs:
 | Quyết định | Chốt | Vì sao |
 |---|---|---|
 | Access token truyền qua đâu? | `Authorization: Bearer` header | API thuần, nhiều client — khác project 09 (cookie, vì đó là SPA cùng site) |
-| Refresh token: JWT hay opaque? | Opaque random string, hash SHA-256 trước khi lưu Redis | Revoke tức thời được, không thể forge/decode như JWT |
-| 1 session hay multi-device? | Multi-device (`auth:sessions:{userId}` là SET) | Điểm khác biệt "nâng cao" so với project 09 |
+| Refresh token: JWT hay opaque? | Opaque random string, hash SHA-256 trước khi lưu MySQL | Revoke tức thời được, không thể forge/decode như JWT; hash để dù DB bị đọc trộm cũng không dùng được token |
+| Refresh token: lưu ở đâu? | MySQL (JPA Entity `RefreshToken`) — **không** phải Redis | Pattern chuẩn/phổ biến nhất cho refresh token: bền, không mất khi Redis restart/evict (mất = force-logout hàng loạt). Redis chỉ giữ access-token blacklist + rate limit (Phase 6) — dữ liệu ngắn hạn, chấp nhận mất được |
+| 1 session hay multi-device? | Multi-device (bảng `refresh_tokens`, query theo `user_id`) | Điểm khác biệt "nâng cao" so với project 09; đồng thời tận dụng được để trả `deviceInfo`/`ip` thật cho `GET /sessions` (Phase 6) — thứ Redis SET không lưu được |
 | Sign JWT bằng gì? | HS256 | Đủ cho monolith 1 service; RS256 chỉ cần khi nhiều service verify độc lập |
-| Rotation + reuse detection | Đánh dấu `revoked` + grace window 30s thay vì xoá ngay | Xoá ngay (GETDEL) sẽ mất payload nên không biết session nào bị đánh cắp để revoke |
+| Rotation + reuse detection | Đánh dấu `revoked` trong 1 transaction có `SELECT ... FOR UPDATE` (`@Lock(PESSIMISTIC_WRITE)`) | DB cho atomicity thật — không cần "grace window" như cách né race condition của Redis (đọc-rồi-ghi 2 bước không atomic) |
+| Idle TTL hay thêm absolute TTL? | Cả 2: `expires_at` (idle, reset mỗi lần rotate) **và** `absolute_expires_at` (cố định từ lần login đầu, không bao giờ reset) | Chỉ idle TTL thì user active liên tục có thể không bao giờ bị buộc login lại — thiếu 1 trần cứng giới hạn "blast radius" nếu token bị lộ mà chưa phát hiện reuse (chuẩn OWASP/NIST session management) |
+| Có lưu `revoked_reason` không? | Có, enum rút gọn còn đúng 3 giá trị: `LOGOUT`, `REUSE_DETECTED`, `ROTATED` | Giá trị cho security audit gần như miễn phí (1 cột). Không thêm `PASSWORD_CHANGED`/`ADMIN_REVOKED`/`SUSPICIOUS_ACTIVITY`/`LOGOUT_ALL` vì project 10 **chưa có** tính năng đổi mật khẩu, admin panel, anomaly detection, hay "đăng xuất mọi thiết bị" tương ứng — thêm khi tính năng đó thật sự tồn tại |
+| Có tách `family_id` riêng khỏi `session_id` không? | Không — dùng chung `session_id` | 2 khái niệm có lifecycle giống hệt nhau trong thiết kế này (tạo mới ở login, giữ nguyên qua các lần rotate) — tách ra là double bookkeeping không có lợi ích hành vi nào ở quy mô project này |
+| Có thêm `replaced_by_token_id` (FK tự tham chiếu) không? | Không | Suy ra được miễn phí bằng `WHERE session_id = ? ORDER BY created_at ASC` (thứ tự có sẵn từ `BaseEntity`) — FK riêng chỉ tốn thêm 1 lượt `UPDATE` mỗi lần rotate cho thông tin đã có sẵn |
 | DTO update profile vs update role | 2 DTO/2 endpoint riêng (`UpdateProfileRequest` vs `UpdateUserRoleRequest`) | Không cho user tự nâng quyền qua endpoint tự sửa profile |
 
 ---
@@ -2925,11 +3187,11 @@ jobs:
 - [ ] Phase 1 — `BaseEntity`, `Role`, `User`, `UserRepository`
 - [x] Phase 1+ — `SecurityConfig` tạm permit-all, `ApiResponse` (+factory `of`), `PageResponse`, `UserResponse`, `CreateUserRequest`/`UpdateProfileRequest`/`UpdateUserRoleRequest` (đã tách DTO ngay từ Phase này, không đợi Phase 5), `UserSpecifications`, `UserService`/`UserServiceImpl`/`UserController` (CRUD + `PATCH /{id}/profile` (partial update) + `PUT /{id}/role`, chưa auth), `GlobalExceptionHandler` + `AppException`/`BadRequestException`/`DuplicateResourceException`/`ResourceNotFoundException`
 - [x] Phase 2 — JJWT dependency, `JwtService`, `UserDetailsServiceImpl`, `AuthService` (register/login), `AuthController`, `GlobalExceptionHandler` + `BadCredentialsException` (401)
-- [ ] Phase 3 — `JwtAuthenticationFilter`, entry point/access-denied handler, `CorsConfig`, cập nhật `SecurityConfig` sang STATELESS
-- [ ] Phase 4 — Redis dependency, `RedisConfig`, `RefreshTokenService` (rotation + reuse detection), cập nhật `JwtService`/`AuthService`/`AuthController`
+- [x] Phase 3 — `JwtAuthenticationFilter`, entry point/access-denied handler, `CorsConfig`, cập nhật `SecurityConfig` sang STATELESS
+- [ ] Phase 4 — `RefreshToken` entity, `RefreshTokenRepository` (pessimistic lock), `RefreshTokenService` (rotation + reuse detection, MySQL), `CleanupScheduledTask` (purge hết hạn) + `@EnableScheduling`, cập nhật `JwtService`/`AuthService`/`AuthController`
 - [ ] Phase 5 — chỉ còn gắn `@PreAuthorize` lên `UserController` (endpoint đã có sẵn từ Phase 1+) + thêm `GET /me`
-- [ ] Phase 6 — `TokenBlacklistService`, cập nhật `JwtAuthenticationFilter`/`AuthService`/`AuthController`, `SessionController`, `RateLimitFilter` — **nhớ sửa lỗi wildcard CORS/permitAll cố ý để lại ở Step 6.7**
-- [ ] Phase 7 — `AuthServiceTest`, `AuthControllerTest`, `UserRepositoryTest` + viết thêm test tương tự cho `user`
+- [ ] Phase 6 — Redis dependency (dời từ Phase 4), `TokenBlacklistService`, cập nhật `JwtAuthenticationFilter`/`AuthService`/`AuthController`, `SessionController` (+ `SessionResponse`), `RateLimitFilter` — **nhớ sửa lỗi wildcard CORS/permitAll cố ý để lại ở Step 6.8**
+- [ ] Phase 7 — `AuthServiceTest`, `AuthControllerTest`, `UserRepositoryTest`, `RefreshTokenRepositoryTest` + viết thêm test tương tự cho `user` và `RefreshTokenServiceTest`
 - [ ] Phase 8 — Flyway migration, `ddl-auto: validate`, `OpenApiConfig`, `Dockerfile`, `docker-compose.yml`, `.env.example`, `.github/workflows/ci.yml`, Testcontainers cho integration test
 
 Checklist hạ tầng/root file (trước khi có nội dung phase 8) xem thêm ở `projects/10-spring-boot-blueprint/README.md`.
