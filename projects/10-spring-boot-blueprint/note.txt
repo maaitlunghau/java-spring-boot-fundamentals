@@ -3,3 +3,7 @@
 - hiện tại chỉ đang CRUD User cơ bản, chưa hoàn chỉnh production:
 + chưa kiểm tra quyền hạn thực hiện request (chưa có Auth - SecurityConfig)
 + chưa có test tự động (cần UserServiceTest / UserControllerTest)
+
+- không hiểu khái niệm Servlet / DispatcherServlet / HttpServletRequest là gì.
+
+- hiểu và phân biệt được sự khác nhau giữa @Component và @Bean
