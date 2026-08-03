@@ -26,6 +26,7 @@ server:
   port: 8081
 
 app:
+  frontend-url: ${FRONTEND_URL:http://localhost:5173}
   jwt:
     secret: "ZsJvY2i+Jz6mP6R8mI6B6j4m7GgR2Kk9i5cJv3Kx1lYf9L8sVwN0eQ2nT5bUaP7d0rMxYyQnE8aLkV3bJtF6hQ=="
     access-token-expiration: 300000

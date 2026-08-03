@@ -134,6 +134,11 @@ public class RefreshTokenServiceImpl implements RefreshTokenService {
         return refreshTokenRepository.findByUserIdAndRevokedFalseOrderByCreatedAtDesc(userId);
     }
 
+    @Override
+    public long getRefreshTokenExpirationSeconds() {
+        return refreshTokenExpirationMs / 1000;
+    }
+
     private String generateOpaqueToken() {
         byte[] bytes = new byte[32];
         new SecureRandom().nextBytes(bytes);

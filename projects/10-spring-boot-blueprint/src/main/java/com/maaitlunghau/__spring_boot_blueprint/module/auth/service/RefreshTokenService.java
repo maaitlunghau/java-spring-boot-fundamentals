@@ -17,4 +17,6 @@ public interface RefreshTokenService {
     public void revokeAllSessions(Long userId, RevokeReason reason);
 
     public List<RefreshToken> listActiveSessions(Long userId);
-}   
+
+    public long getRefreshTokenExpirationSeconds();
+}
